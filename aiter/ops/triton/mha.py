@@ -422,6 +422,8 @@ def _attn_fwd(
     BATCH,
     NUM_XCD: tl.constexpr,
     USE_INT64_STRIDES: tl.constexpr,
+    MAPPING_MODE: tl.constexpr,  # 0: aiter, 1: head_first, 2: triton_fa
+    USE_REMAP: tl.constexpr,     # True/False for aiter remap functionality
 ):
     NUM_BLOCKS = (SEQLEN_Q + BLOCK_M - 1) // BLOCK_M
     # calculate offsets
@@ -430,9 +432,35 @@ def _attn_fwd(
     )  # workgroup id ranging: 0,1,2,...., (BATCH * NUM_Q_HEADS * NUM_BLOCKS - 1)
     # num blocks along seqlen
 
-    off_q_head = wid % NUM_Q_HEADS
-    off_q_head = remap_xcd(off_q_head, NUM_Q_HEADS, NUM_XCD)
-    start_m = (wid // NUM_Q_HEADS) % NUM_BLOCKS
+    # calculate offsets according to mapping condition
+    if MAPPING_MODE == 0:  # aiter case
+        off_q_head = wid % NUM_Q_HEADS
+        start_m = (wid // NUM_Q_HEADS) % NUM_BLOCKS
+
+        # Conditional remap - only compiled when USE_REMAP is True
+        if USE_REMAP:
+            off_q_head = remap_xcd(off_q_head, NUM_Q_HEADS, NUM_XCD)
+
+    elif MAPPING_MODE == 1:  # head_first case
+        chunk_size = NUM_XCD * NUM_BLOCKS  #number of total workgroups in 8 (NUM_XCD) q_heads
+        wid_per_batch = wid % (NUM_Q_HEADS * NUM_BLOCKS)  #per batch id
+        q_heads_per_xcd = NUM_Q_HEADS // NUM_XCD #q_heads per xcd
+
+        #fall back to triton default in case of lesser or non multiple of 8 q_heads
+        if(NUM_Q_HEADS // NUM_XCD == 0 or NUM_Q_HEADS % NUM_XCD != 0):
+            start_m = wid % NUM_BLOCKS
+            off_q_head = (wid // NUM_BLOCKS) % NUM_Q_HEADS
+        
+        else:
+            #first element indexes starting head for each XCD, second element adds 1 for every next head on the same XCD
+            off_q_head = (wid_per_batch % NUM_XCD) * q_heads_per_xcd + (wid_per_batch // chunk_size)
+            #continuous block ids for the q_head mapped to the same xcd 
+            start_m = (wid_per_batch % chunk_size) // NUM_XCD
+
+    else:  # MAPPING_MODE == 2, triton_fa case
+        start_m = wid % NUM_BLOCKS
+        off_q_head = (wid // NUM_BLOCKS) % NUM_Q_HEADS
+    
     off_z = (wid // (NUM_BLOCKS * NUM_Q_HEADS)) % BATCH
 
     # offsets
@@ -913,6 +941,8 @@ def _flash_attn_forward(
     descale_k: Optional[torch.Tensor] = None,
     descale_v: Optional[torch.Tensor] = None,
     config: Optional[dict[str, any]] = None,
+    mapping_mode: int = 0,      
+    use_remap: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
     if bias is not None:
@@ -1077,6 +1107,8 @@ def _flash_attn_forward(
         BATCH=batch,
         NUM_XCD=8,
         USE_INT64_STRIDES=_USE_INT64_STRIDES,
+        MAPPING_MODE=mapping_mode, 
+        USE_REMAP=use_remap,
         **config,
     )
 
@@ -1101,6 +1133,8 @@ class _FlashAttnFunc(torch.autograd.Function):
         return_softmax,
         is_grad_enabled,
         config=None,
+        mapping_mode=0,
+        use_remap=True,
     ):
         is_grad = is_grad_enabled and any(x.requires_grad for x in [q, k, v])
         if softmax_scale is None:
@@ -1127,6 +1161,8 @@ class _FlashAttnFunc(torch.autograd.Function):
                 max_seqlen_q=q.shape[1],
                 max_seqlen_k=k.shape[1],
                 config=config,
+                mapping_mode=mapping_mode,    # Pass them through
+                use_remap=use_remap,
             )
         )
 
@@ -1248,6 +1284,8 @@ def flash_attn_func(
     return_lse=False,
     return_attn_probs=False,
     config: Optional[dict[str, any]] = None,
+    mapping_mode=0,        # Add these parameters
+    use_remap=True,
 ):
     """dropout_p should be set to 0.0 during evaluation
     Supports multi-query and grouped-query attention (MQA/GQA) by passing in KV with fewer heads
@@ -1314,6 +1352,8 @@ def flash_attn_func(
         return_attn_probs,
         torch.is_grad_enabled(),
         config,
+        mapping_mode,
+        use_remap,
     )
 
 
