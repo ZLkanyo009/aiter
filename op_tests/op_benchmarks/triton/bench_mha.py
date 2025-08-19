@@ -362,7 +362,7 @@ def run_benchmark(custom, args):
         MAPPING_AITER = 0
         MAPPING_HEAD_FIRST = 1
         MAPPING_TRITON_FA = 2
-        
+
         if varlen:
             if args.fp8:
 
@@ -427,7 +427,7 @@ def run_benchmark(custom, args):
                         causal=causal,
                         return_lse=return_lse,
                         return_attn_probs=return_attn_probs,
-                        mapping_mode=args.mapping_mode, 
+                        mapping_mode=args.mapping_mode,
                         use_remap=args.use_remap,
                     )
 
@@ -546,9 +546,10 @@ def parse_args():
     parser.add_argument(
         "-o", action="store_true", help="Write performance results to CSV file"
     )
-        "-mapping_mode", 
-        type=int, 
-        default=0, 
+    parser.add_argument(
+        "-mapping_mode",
+        type=int,
+        default=0,
         choices=[0, 1, 2],
         help="Mapping mode: 0=aiter_fa, 1=head_first, 2=triton_fa"
     )
