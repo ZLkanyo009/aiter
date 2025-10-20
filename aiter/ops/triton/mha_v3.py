@@ -575,22 +575,27 @@ def _quantize_bshd(
 def _quantize_thd(
     x: torch.Tensor,
     fp8_dtype: torch.dtype,
+    cu_seqlens: torch.Tensor,
     clamp_val=1e-9,
     group_size: Optional[int] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Convert a tensor to FP8 format for varlen inputs, returning an FP8 tensor and a descale factor.
 
+    This function computes descale factors per sequence in the batch, analogous to how _quantize_bshd
+    computes per-batch descale factors.
+
     Args:
         x (torch.Tensor): shape [total_tokens, heads, dim]
         fp8_dtype (torch.dtype): FP8 data type (e.g., torch.float8_e4m3fnuz)
+        cu_seqlens (torch.Tensor): Cumulative sequence lengths [batch_size + 1]
         clamp_val (float): minimum value for scaling to avoid division by zero
         group_size (int, optional): For GQA/MQA on query tensors, specify the group size (num_heads // num_kv_heads)
                                      to group query heads appropriately. If None, computes scaling per head.
     Returns:
         x_fp8 (torch.Tensor): FP8 tensor with the same shape as x
-        descale_factor (torch.Tensor): tensor of shape [1, num_heads // group_size] if group_size is specified,
-                                        otherwise [1, heads]
+        descale_factor (torch.Tensor): tensor of shape [batch_size, num_heads // group_size] if group_size is specified,
+                                        otherwise [batch_size, heads]
     """
     if len(x.shape) != 3:
         raise ValueError(
@@ -598,6 +603,9 @@ def _quantize_thd(
         )
 
     total_tokens, num_heads, head_dim = x.shape
+    batch_size = len(cu_seqlens) - 1
+
+    fp8_max = torch.finfo(fp8_dtype).max
 
     # For GQA/MQA: if group_size is specified and > 1,
     # we need to group query heads and compute scaling per group
@@ -611,46 +619,71 @@ def _quantize_thd(
         # Reshape to group query heads: [total_tokens, num_groups, group_size, head_dim]
         x_grouped = x.view(total_tokens, num_groups, group_size, head_dim)
 
-        # Compute max over total_tokens, group_size (query heads in group), and head_dim
-        # Result shape: [num_groups] -> reshape to [1, num_groups] for compatibility
-        x_abs_max = x_grouped.abs().amax(dim=(0, 2, 3))
-        x_abs_max = torch.maximum(x_abs_max, x.new_tensor(clamp_val))
+        # Compute descale factors per sequence (analogous to per-batch in bshd)
+        descale_list = []
+        x_fp8_list = []
 
-        # Unsqueeze to [1, num_groups, 1, 1] for broadcasting
-        x_abs_max_broadcast = x_abs_max.unsqueeze(0).unsqueeze(2).unsqueeze(3)
+        for b in range(batch_size):
+            start = cu_seqlens[b].item()
+            end = cu_seqlens[b + 1].item()
 
-        # Compute scale and descale
-        fp8_max = torch.finfo(fp8_dtype).max
-        scale = fp8_max / x_abs_max_broadcast
-        descale_factor = (
-            (x_abs_max / fp8_max).to(torch.float32).unsqueeze(0)
-        )  # [1, num_groups]
+            # Get tokens for this sequence: [seq_len, num_groups, group_size, head_dim]
+            x_seq = x_grouped[start:end]
 
-        # Quantize to FP8 and reshape back to original shape
-        x_fp8 = (
-            (x_grouped * scale).view(total_tokens, num_heads, head_dim).to(fp8_dtype)
-        )
+            # Compute max over seq_len, group_size, and head_dim
+            # Result shape: [num_groups]
+            x_abs_max = x_seq.abs().amax(dim=(0, 2, 3))
+            x_abs_max = torch.maximum(x_abs_max, x.new_tensor(clamp_val))
+
+            # Compute descale for this sequence: [num_groups]
+            descale_seq = (x_abs_max / fp8_max).to(torch.float32)
+            descale_list.append(descale_seq)
+
+            # Quantize this sequence
+            # Unsqueeze to [1, num_groups, 1, 1] for broadcasting
+            x_abs_max_broadcast = x_abs_max.unsqueeze(0).unsqueeze(2).unsqueeze(3)
+            scale = fp8_max / x_abs_max_broadcast
+            x_seq_fp8 = (x_seq * scale).to(fp8_dtype)
+            x_fp8_list.append(x_seq_fp8)
+
+        # Stack descale factors: [batch_size, num_groups]
+        descale_factor = torch.stack(descale_list, dim=0)
+
+        # Concatenate quantized sequences and reshape back to original shape
+        x_fp8 = torch.cat(x_fp8_list, dim=0).view(total_tokens, num_heads, head_dim)
     else:
-        # Standard case: compute scaling per head
-        reduce_dims = (0, 2)  # total_tokens and dim dimensions
+        # Standard case: compute scaling per head for each sequence
+        descale_list = []
+        x_fp8_list = []
 
-        # Compute the absolute max along reduce_dims, clamped to avoid 0-scale
-        # Result shape: [heads] -> reshape to [1, heads] for compatibility
-        x_abs_max = x.abs().amax(dim=reduce_dims)
-        x_abs_max = torch.maximum(x_abs_max, x.new_tensor(clamp_val))
+        for b in range(batch_size):
+            start = cu_seqlens[b].item()
+            end = cu_seqlens[b + 1].item()
 
-        # Unsqueeze to [1, heads, 1] for broadcasting during scaling
-        x_abs_max_broadcast = x_abs_max.unsqueeze(0).unsqueeze(2)
+            # Get tokens for this sequence: [seq_len, num_heads, head_dim]
+            x_seq = x[start:end]
 
-        # compute scale and descale
-        fp8_max = torch.finfo(fp8_dtype).max
-        scale = fp8_max / x_abs_max_broadcast
-        descale_factor = (
-            (x_abs_max / fp8_max).to(torch.float32).unsqueeze(0)
-        )  # [1, heads]
+            # Compute max over seq_len and head_dim
+            # Result shape: [num_heads]
+            x_abs_max = x_seq.abs().amax(dim=(0, 2))
+            x_abs_max = torch.maximum(x_abs_max, x.new_tensor(clamp_val))
 
-        # Quantize to FP8
-        x_fp8 = (x * scale).to(fp8_dtype)
+            # Compute descale for this sequence: [num_heads]
+            descale_seq = (x_abs_max / fp8_max).to(torch.float32)
+            descale_list.append(descale_seq)
+
+            # Quantize this sequence
+            # Unsqueeze to [1, num_heads, 1] for broadcasting
+            x_abs_max_broadcast = x_abs_max.unsqueeze(0).unsqueeze(2)
+            scale = fp8_max / x_abs_max_broadcast
+            x_seq_fp8 = (x_seq * scale).to(fp8_dtype)
+            x_fp8_list.append(x_seq_fp8)
+
+        # Stack descale factors: [batch_size, num_heads]
+        descale_factor = torch.stack(descale_list, dim=0)
+
+        # Concatenate quantized sequences
+        x_fp8 = torch.cat(x_fp8_list, dim=0)
 
     return x_fp8, descale_factor
 
@@ -975,23 +1008,26 @@ class _FlashAttnVarlenFP8Wrapper(torch.autograd.Function):
         group_size = (
             num_q_heads // num_kv_heads if num_q_heads != num_kv_heads else None
         )
-        q_fp8, q_descale = _quantize_thd(q, fp8_dtype, group_size=group_size)
-        k_fp8, k_descale = _quantize_thd(k, fp8_dtype)
-        v_fp8, v_descale = _quantize_thd(v, fp8_dtype)
+        q_fp8, q_descale = _quantize_thd(
+            q, fp8_dtype, cu_seqlens_q, group_size=group_size
+        )
+        k_fp8, k_descale = _quantize_thd(k, fp8_dtype, cu_seqlens_k)
+        v_fp8, v_descale = _quantize_thd(v, fp8_dtype, cu_seqlens_k)
 
-        # Verify descale shapes - _quantize_thd returns shape [1, num_heads] or [1, num_groups]
+        # Verify descale shapes - _quantize_thd now returns shape [batch_size, num_heads] or [batch_size, num_groups]
+        batch_size = len(cu_seqlens_q) - 1
         assert q_descale.shape == (
-            1,
+            batch_size,
             num_kv_heads,
-        ), f"q_descale shape {q_descale.shape} != expected {(1, num_kv_heads)}"
+        ), f"q_descale shape {q_descale.shape} != expected {(batch_size, num_kv_heads)}"
         assert k_descale.shape == (
-            1,
+            batch_size,
             num_kv_heads,
-        ), f"k_descale shape {k_descale.shape} != expected {(1, num_kv_heads)}"
+        ), f"k_descale shape {k_descale.shape} != expected {(batch_size, num_kv_heads)}"
         assert v_descale.shape == (
-            1,
+            batch_size,
             num_kv_heads,
-        ), f"v_descale shape {v_descale.shape} != expected {(1, num_kv_heads)}"
+        ), f"v_descale shape {v_descale.shape} != expected {(batch_size, num_kv_heads)}"
 
         # Derive softmax scale if not provided
         if softmax_scale is None:

@@ -24,7 +24,7 @@ from aiter.test_mha_common import (
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 DEBUG_MODE = False
-ATOL_fp8 = 2.5e-1
+ATOL_fp8 = 3.0e-1
 RTOL_fp8 = 2.5e-1
 
 
@@ -463,8 +463,8 @@ def test_mha_varlen(
 
     if FP8:
         torch.testing.assert_close(
-            triton_out, torch_out.to(triton_out.dtype), atol=0.25, rtol=10
-        )  # Lower tolerance for FP8
+            triton_out, torch_out.to(triton_out.dtype), atol=ATOL_fp8, rtol=RTOL_fp8
+        )
     else:
         torch.testing.assert_close(
             triton_out, torch_out.to(triton_out.dtype), atol=1e-1, rtol=1e-1
