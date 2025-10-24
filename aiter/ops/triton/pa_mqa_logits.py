@@ -2,18 +2,19 @@
 # Copyright (C) 2024-2025, Advanced Micro Devices, Inc. All rights reserved.
 
 import torch
+import triton
 
 from aiter.ops.triton._triton_kernels.pa_mqa_logits import (
     _deepgemm_fp8_paged_mqa_logits_stage1,
     _deepgemm_fp8_paged_mqa_logits_stage1_ragged_k,
     _deepgemm_fp8_paged_mqa_logits,
     _deepgemm_fp8_paged_mqa_logits_ragged_k,
-    _gluon_deepgemm_fp8_paged_mqa_logits_ragged_k,
     _gluon_deepgemm_fp8_paged_mqa_logits,
     _gluon_deepgemm_fp8_paged_mqa_logits_preshuffle,
 )
 
-from aiter.ops.shuffle import shuffle_weight
+from aiter.ops.triton.utils.core import AITER_TRITON_CONFIGS_PATH
+from aiter.utility.triton.triton_metadata_redirect import AOTMetadataContext
 
 
 def deepgemm_fp8_paged_mqa_logits_ragged_k(
@@ -207,51 +208,61 @@ def deepgemm_fp8_paged_mqa_logits(
     grid = (batch_size * next_n * config["SplitKV"],)
     if Preshuffle:
         assert KVBlockSize == 16
-        dump_kernel = _gluon_deepgemm_fp8_paged_mqa_logits_preshuffle[grid](
-            batch_size,
-            next_n,
-            heads,
-            q_fp8,
-            q_fp8.stride(0),
-            q_fp8.stride(1),
-            q_fp8.stride(2),
-            kv_cache_fp8,
-            kv_cache_fp8.stride(0),
-            kv_cache_scale,
-            kv_cache_scale.stride(0),
-            context_lens,
-            kv_indices,
-            weights,
-            weights.stride(0),
-            out_logits,
-            out_logits.stride(0),
-            max_model_len,
-            max_block_len,
-            waves_per_eu=WavePerEU,
-            **config,
-        )
+        metadata_pth = f"{AITER_TRITON_CONFIGS_PATH}/paged_mqa_logits/aot/{_gluon_deepgemm_fp8_paged_mqa_logits_preshuffle.fn.__name__}_B{"1" if batch_size == 1 else "X"}N{"1" if next_n == 1 else "X"}"
+        with AOTMetadataContext(
+            _gluon_deepgemm_fp8_paged_mqa_logits_preshuffle.fn.__name__,
+            f"{metadata_pth}",
+        ):
+            _gluon_deepgemm_fp8_paged_mqa_logits_preshuffle[grid](
+                batch_size,
+                next_n,
+                heads,
+                q_fp8,
+                q_fp8.stride(0),
+                q_fp8.stride(1),
+                q_fp8.stride(2),
+                kv_cache_fp8,
+                kv_cache_fp8.stride(0),
+                kv_cache_scale,
+                kv_cache_scale.stride(0),
+                context_lens,
+                kv_indices,
+                weights,
+                weights.stride(0),
+                out_logits,
+                out_logits.stride(0),
+                max_model_len,
+                max_block_len,
+                waves_per_eu=WavePerEU,
+                **config,
+            )
     else:
         assert KVBlockSize == 1
-        dump_kernel = _gluon_deepgemm_fp8_paged_mqa_logits[grid](
-            batch_size,
-            next_n,
-            heads,
-            q_fp8,
-            q_fp8.stride(0),
-            q_fp8.stride(1),
-            q_fp8.stride(2),
-            kv_cache_fp8,
-            kv_cache_fp8.stride(0),
-            kv_cache_scale,
-            kv_cache_scale.stride(0),
-            context_lens,
-            kv_indices,
-            weights,
-            weights.stride(0),
-            out_logits,
-            out_logits.stride(0),
-            max_model_len,
-            max_block_len,
-            waves_per_eu=WavePerEU,
-            **config,
-        )
+        metadata_pth = f"{AITER_TRITON_CONFIGS_PATH}/paged_mqa_logits/aot/{_gluon_deepgemm_fp8_paged_mqa_logits.fn.__name__}_B{"1" if batch_size == 1 else "X"}N{"1" if next_n == 1 else "X"}"
+        with AOTMetadataContext(
+            _gluon_deepgemm_fp8_paged_mqa_logits.fn.__name__,
+            f"{metadata_pth}",
+        ):
+            _gluon_deepgemm_fp8_paged_mqa_logits[grid](
+                batch_size,
+                next_n,
+                heads,
+                q_fp8,
+                q_fp8.stride(0),
+                q_fp8.stride(1),
+                q_fp8.stride(2),
+                kv_cache_fp8,
+                kv_cache_fp8.stride(0),
+                kv_cache_scale,
+                kv_cache_scale.stride(0),
+                context_lens,
+                kv_indices,
+                weights,
+                weights.stride(0),
+                out_logits,
+                out_logits.stride(0),
+                max_model_len,
+                max_block_len,
+                waves_per_eu=WavePerEU,
+                **config,
+            )
