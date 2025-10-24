@@ -42,7 +42,7 @@ def deepgemm_fp8_paged_mqa_logits_ragged_k(
     }
 
     grid = (batch_size * next_n * config["SplitKV"],)
-    dump_kernel = _gluon_deepgemm_fp8_paged_mqa_logits_ragged_k[grid](
+    dump_kernel = _deepgemm_fp8_paged_mqa_logits_ragged_k[grid](
         batch_size,
         next_n,
         heads,
