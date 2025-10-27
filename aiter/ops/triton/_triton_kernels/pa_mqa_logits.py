@@ -5,6 +5,10 @@ import math
 import triton
 import triton.language as tl
 
+from triton.experimental import gluon
+from triton.experimental.gluon import language as gl
+from aiter.utility.triton.triton_metadata_redirect import with_custom_metadata_path
+
 
 @triton.jit
 def _sum_combine(a, b):
@@ -387,3 +391,63 @@ def _deepgemm_fp8_paged_mqa_logits(
             + (context_idx + tl.arange(0, ChunkK)),
             logits,
         )
+
+
+@gluon.jit
+def _gluon_deepgemm_fp8_paged_mqa_logits(
+    batch_size,
+    next_n,
+    heads_num,
+    Q_buffer,
+    stride_q_batch,
+    stride_q_next_n,
+    stride_q_heads,
+    KV_buffer,
+    stride_k_seq,
+    scale_buffer,
+    stride_scale_seq,
+    context_len_ptr,
+    kv_indices,
+    weights,
+    stride_w_batch,
+    OutLogits_buffer,
+    stride_out_batch,
+    max_model_len,
+    max_block_len,
+    SplitKV,
+    ChunkQ: tl.constexpr,
+    ChunkK: tl.constexpr,
+    HiddenDim: tl.constexpr,
+    KVBlockSize: tl.constexpr = 1,
+):
+    pass
+
+
+@gluon.jit
+def _gluon_deepgemm_fp8_paged_mqa_logits_preshuffle(
+    batch_size,
+    next_n,
+    heads_num,
+    Q_buffer,
+    stride_q_batch,
+    stride_q_next_n,
+    stride_q_heads,
+    KV_buffer,
+    stride_k_seq,
+    scale_buffer,
+    stride_scale_seq,
+    context_len_ptr,
+    kv_indices,
+    weights,
+    stride_w_batch,
+    OutLogits_buffer,
+    stride_out_batch,
+    max_model_len,
+    max_block_len,
+    SplitKV,
+    ChunkQ: tl.constexpr,
+    ChunkK: tl.constexpr,
+    HiddenDim: tl.constexpr,
+    KVBlockSize: tl.constexpr = 16,
+):
+    pass

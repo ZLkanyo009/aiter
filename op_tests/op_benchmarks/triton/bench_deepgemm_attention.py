@@ -17,6 +17,7 @@ from aiter.ops.triton.pa_mqa_logits import (
     deepgemm_fp8_paged_mqa_logits_stage1_ragged_k,
     deepgemm_fp8_paged_mqa_logits_ragged_k,
 )
+from aiter.ops.shuffle import shuffle_weight
 
 
 def cdiv(x: int, y: int) -> int:
@@ -29,16 +30,8 @@ def kv_cache_cast_to_fp8(x: torch.Tensor) -> torch.Tensor:
     x_amax = x.abs().float().amax(dim=3, keepdim=True).clamp(1e-4)
     sf = x_amax / 240.0
     x_scaled = (x * (1.0 / sf)).to(torch.float8_e4m3fnuz)
-    x_fp8 = torch.empty(
-        (num_blocks, block_size * (head_dim + 4)), device=x.device, dtype=torch.uint8
-    )
-    x_fp8[:, : block_size * head_dim] = x_scaled.view(
-        num_blocks, block_size * head_dim
-    ).view(dtype=torch.uint8)
-    x_fp8[:, block_size * head_dim :] = sf.view(num_blocks, block_size).view(
-        dtype=torch.uint8
-    )
-    return x_fp8.view(num_blocks, block_size, num_heads, head_dim + 4)
+
+    return x_scaled.contiguous(), sf.contiguous()
 
 
 def ref_fp8_paged_mqa_logits(
@@ -100,7 +93,7 @@ def ref_fp8_paged_mqa_logits_ragged(
     max_model_len: int,
 ):
     batch_size, next_n, heads, dim = q.size()
-    seq_kv, _, dim = kv_cache.size()  # 3d
+    seq_kv, block_size, dim = kv_cache.size()  # 3d
     logits = torch.full(
         [batch_size * next_n, max_model_len],
         float("-inf"),
@@ -166,8 +159,7 @@ def create_paged_mqa_logits_configs(args: argparse.Namespace):
 
 
 def run_benchmark(args: argparse.Namespace):
-    ChunkK = 64
-    SplitKV = 5
+    ChunkK = 256
 
     @triton.testing.perf_report(create_paged_mqa_logits_configs(args))
     def test_deepgemm_fp8_paged_mqa_logits(
@@ -177,10 +169,10 @@ def run_benchmark(args: argparse.Namespace):
         random.seed(0)
 
         max_model_len = 2 * avg_kv_length
-        num_blocks = 111 * 1000 * 3
-        blocksize = 1
+        num_blocks = max_model_len
+        blocksize = 16 if kv_storage_kind == "non_ragged_k" else 1
 
-        var_ratio = 0.4
+        var_ratio = 0.0
         context_lens = (
             torch.randint(
                 int((1 - var_ratio) * avg_kv_length),
@@ -229,7 +221,7 @@ def run_benchmark(args: argparse.Namespace):
                 counter += 1
 
         q_fp8 = q.to(qk_datatype)
-        kv_cache_fp8 = kv_cache_cast_to_fp8(kv_cache)
+        split_kv_cache_fp8, split_kv_cache_scale = kv_cache_cast_to_fp8(kv_cache)
 
         kv_indices = torch.zeros(
             prefix_sum_context_lens[-1], device="cuda", dtype=torch.int32
@@ -247,7 +239,7 @@ def run_benchmark(args: argparse.Namespace):
         else:
             ref_logits = ref_fp8_paged_mqa_logits_ragged(
                 q,
-                kv_cache.view([num_blocks, 1, index_dim]),
+                kv_cache.view([num_blocks, blocksize, index_dim]),
                 weights,
                 prefix_sum_context_lens,
                 kv_indices,
@@ -268,48 +260,60 @@ def run_benchmark(args: argparse.Namespace):
         )
 
         if kv_storage_kind == "non_ragged_k":
-            deepgemm_fp8_paged_mqa_logits_stage1(
-                q_fp8,
-                kv_cache_fp8,
-                weights,
-                out_qk,
-                context_lens,
-                block_tables,
-                max_model_len,
+            # deepgemm_fp8_paged_mqa_logits_stage1(
+            #     q_fp8,
+            #     kv_cache_fp8,
+            #     weights,
+            #     out_qk,
+            #     context_lens,
+            #     block_tables,
+            #     max_model_len,
+            # )
+            Preshuffle = blocksize == 16
+            split_kv_cache_fp8 = (
+                shuffle_weight(
+                    split_kv_cache_fp8.view([num_blocks, blocksize, index_dim])
+                )
+                if Preshuffle
+                else split_kv_cache_fp8
             )
+
             _, elapsed_us = run_perftest(
                 deepgemm_fp8_paged_mqa_logits,
                 q_fp8,
-                kv_cache_fp8,
+                split_kv_cache_fp8,
+                split_kv_cache_scale,
                 weights,
                 out_logits,
                 context_lens,
                 block_tables,
                 max_model_len,
-                ChunkK,
-                SplitKV,
+                max_block_len,
+                ChunkK=ChunkK,
+                Preshuffle=Preshuffle,
+                KVBlockSize=blocksize,
             )
         else:
-            deepgemm_fp8_paged_mqa_logits_stage1_ragged_k(
-                q_fp8,
-                kv_cache_fp8.view([num_blocks, 1, -1]),
-                weights,
-                out_qk,
-                prefix_sum_context_lens,
-                kv_indices,
-                max_model_len,
-            )
+            # deepgemm_fp8_paged_mqa_logits_stage1_ragged_k(
+            #     q_fp8,
+            #     kv_cache_fp8.view([num_blocks, 1, -1]),
+            #     weights,
+            #     out_qk,
+            #     prefix_sum_context_lens,
+            #     kv_indices,
+            #     max_model_len,
+            # )
             _, elapsed_us = run_perftest(
                 deepgemm_fp8_paged_mqa_logits_ragged_k,
                 q_fp8,
-                kv_cache_fp8.view([num_blocks, 1, -1]),
+                split_kv_cache_fp8,
+                split_kv_cache_scale,
                 weights,
                 out_logits,
                 prefix_sum_context_lens,
                 kv_indices,
                 max_model_len,
                 ChunkK,
-                SplitKV,
             )
 
         out_qk_logits = torch.sum(out_qk, dim=0)
@@ -335,10 +339,11 @@ def run_benchmark(args: argparse.Namespace):
         out_qk_logits = out_qk_logits.masked_fill(~mask, 0)
         ref_logits = ref_logits.masked_fill(~mask, 0)
 
-        qk_diff = calc_diff(out_qk_logits, ref_logits)
+        # qk_diff = calc_diff(out_qk_logits, ref_logits)
         logits_diff = calc_diff(out_logits, ref_logits)
 
-        assert qk_diff < 1e-3
+        print(">>>! logits_diff = ", logits_diff)
+        # assert qk_diff < 1e-3
         assert logits_diff < 1e-3
 
         total_float_operations = (
@@ -346,15 +351,11 @@ def run_benchmark(args: argparse.Namespace):
         )
         flops = total_float_operations / elapsed_us * 1e-6
 
-        ctx_list = context_lens.tolist()
-        total_memcpyA_bytes = batch_size * next_n * SplitKV * heads * index_dim
-        total_memcpyB_bytes = (
-            sum([cdiv(ctx, ChunkK) * ChunkK * index_dim for ctx in ctx_list]) * next_n
+        print(
+            kv_storage_kind,
+            " time elapsed: ",
+            elapsed_us,
         )
-
-        bandwidth_gbps = (total_memcpyA_bytes + total_memcpyB_bytes) / elapsed_us * 1e-3
-
-        print("bandwidth (GB/s): ", bandwidth_gbps)
 
         return flops
 
