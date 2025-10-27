@@ -5,8 +5,6 @@ import math
 import triton
 import triton.language as tl
 
-from triton.experimental import gluon
-from triton.experimental.gluon import language as gl
 from aiter.utility.triton.triton_metadata_redirect import with_custom_metadata_path
 
 
@@ -393,7 +391,7 @@ def _deepgemm_fp8_paged_mqa_logits(
         )
 
 
-@gluon.jit
+@triton.jit
 def _gluon_deepgemm_fp8_paged_mqa_logits(
     batch_size,
     next_n,
@@ -423,7 +421,7 @@ def _gluon_deepgemm_fp8_paged_mqa_logits(
     pass
 
 
-@gluon.jit
+@triton.jit
 def _gluon_deepgemm_fp8_paged_mqa_logits_preshuffle(
     batch_size,
     next_n,
