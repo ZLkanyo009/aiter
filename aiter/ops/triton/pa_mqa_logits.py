@@ -175,14 +175,12 @@ def deepgemm_fp8_paged_mqa_logits_stage1(
 
 def deepgemm_fp8_paged_mqa_logits(
     q_fp8: torch.Tensor,  # dtype = float8
-    kv_cache_fp8: torch.Tensor,  # dtype = float8
-    kv_cache_scale,
+    kv_cache,
     weights: torch.Tensor,  # dtype = float32
     out_logits: torch.Tensor,  # dtype = float32
     context_lens: torch.Tensor,
     kv_indices: torch.Tensor,
     max_model_len: int,
-    max_block_len: int,
     Preshuffle: bool = False,
     KVBlockSize: int = 1,
     ChunkK: int = 256,
@@ -190,7 +188,7 @@ def deepgemm_fp8_paged_mqa_logits(
     WavePerEU: int = 2,
 ):
     batch_size, next_n, heads, hidden_dim = q_fp8.size()
-    _, max_blk_len = kv_indices.size()
+    _, max_block_len = kv_indices.size()
 
     TileQCount = batch_size * next_n
     SplitKV = (max(1, TotalCuCount // TileQCount) + 4) // 5 * 5 * WavePerEU
@@ -209,6 +207,8 @@ def deepgemm_fp8_paged_mqa_logits(
     if Preshuffle:
         assert KVBlockSize == 16
         metadata_pth = f"{AITER_TRITON_CONFIGS_PATH}/paged_mqa_logits/aot/{_gluon_deepgemm_fp8_paged_mqa_logits_preshuffle.fn.__name__}_B{"1" if batch_size == 1 else "X"}N{"1" if next_n == 1 else "X"}"
+
+        kv_cache_fp8, kv_cache_scale = kv_cache
         with AOTMetadataContext(
             _gluon_deepgemm_fp8_paged_mqa_logits_preshuffle.fn.__name__,
             f"{metadata_pth}",
@@ -238,11 +238,21 @@ def deepgemm_fp8_paged_mqa_logits(
             )
     else:
         assert KVBlockSize == 1
+
+        kv_cache_fp8, kv_cache_scale = (
+            kv_cache[..., :hidden_dim],
+            kv_cache[..., hidden_dim:],
+        )
+
+        kv_cache_fp8 = kv_cache_fp8.view(torch.float8_e4m3fnuz)
+        kv_cache_scale = kv_cache_scale.view(torch.float32)
+
         metadata_pth = f"{AITER_TRITON_CONFIGS_PATH}/paged_mqa_logits/aot/{_gluon_deepgemm_fp8_paged_mqa_logits.fn.__name__}_B{"1" if batch_size == 1 else "X"}N{"1" if next_n == 1 else "X"}"
         with AOTMetadataContext(
             _gluon_deepgemm_fp8_paged_mqa_logits.fn.__name__,
             f"{metadata_pth}",
         ):
+
             _gluon_deepgemm_fp8_paged_mqa_logits[grid](
                 batch_size,
                 next_n,
