@@ -271,6 +271,5 @@ def deepgemm_fp8_paged_mqa_logits(
             waves_per_eu=WavePerEU,
             **config,
         )
-        print(
-            f">> BATCH = {batch_size}  NEXT_N = {next_n} HASH = {triton.runtime.cache.get_cache_manager(dump_kernel.hash).key}"
-        )
+
+    return triton.runtime.cache.get_cache_manager(dump_kernel.hash).key

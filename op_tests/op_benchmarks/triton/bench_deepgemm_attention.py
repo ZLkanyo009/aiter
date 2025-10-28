@@ -6,6 +6,7 @@ import argparse
 
 import pytest
 import torch
+import os
 
 import triton
 import triton.language as tl
@@ -148,9 +149,18 @@ def create_paged_mqa_logits_configs(args: argparse.Namespace):
     line_names = ["non_ragged_k"]
     line_args = "kv_storage_kind"
 
-    x_vals_list = [
-        (args.batch, args.mtp + 1, args.heads, args.index_dim, args.kv_length)
-    ]
+    x_vals_list = []
+    if args.aot:
+        x_vals_list += [
+            (1, 1, args.heads, args.index_dim, args.kv_length),
+            (2, 1, args.heads, args.index_dim, args.kv_length),
+            (1, 2, args.heads, args.index_dim, args.kv_length),
+            (2, 2, args.heads, args.index_dim, args.kv_length),
+        ]
+    else:
+        x_vals_list += [
+            (args.batch, args.mtp + 1, args.heads, args.index_dim, args.kv_length)
+        ]
 
     configs = []
     configs.append(
@@ -168,6 +178,9 @@ def create_paged_mqa_logits_configs(args: argparse.Namespace):
     )
 
     return configs
+
+
+cache_name2dir = []
 
 
 def run_benchmark(args: argparse.Namespace):
@@ -258,12 +271,6 @@ def run_benchmark(args: argparse.Namespace):
                 max_model_len,
             )
 
-        out_qk = torch.full(
-            (heads, batch_size * next_n, max_model_len),
-            float("-inf"),
-            device="cuda",
-            dtype=torch.float32,
-        )
         out_logits = torch.full(
             (batch_size * next_n, max_model_len),
             float("-inf"),
@@ -272,15 +279,6 @@ def run_benchmark(args: argparse.Namespace):
         )
 
         if kv_storage_kind == "non_ragged_k":
-            # deepgemm_fp8_paged_mqa_logits_stage1(
-            #     q_fp8,
-            #     kv_cache_fp8,
-            #     weights,
-            #     out_qk,
-            #     context_lens,
-            #     block_tables,
-            #     max_model_len,
-            # )
             Preshuffle = blocksize == 16
             # split_kv_cache_fp8 = (
             #     shuffle_weight(
@@ -302,31 +300,31 @@ def run_benchmark(args: argparse.Namespace):
                 ChunkK=ChunkK,
                 Preshuffle=Preshuffle,
                 KVBlockSize=blocksize,
-                num_iters=3,
             )
-        else:
-            # deepgemm_fp8_paged_mqa_logits_stage1_ragged_k(
-            #     q_fp8,
-            #     kv_cache_fp8.view([num_blocks, 1, -1]),
-            #     weights,
-            #     out_qk,
-            #     prefix_sum_context_lens,
-            #     kv_indices,
-            #     max_model_len,
-            # )
-            _, elapsed_us = run_perftest(
-                deepgemm_fp8_paged_mqa_logits_ragged_k,
+            cache_key = deepgemm_fp8_paged_mqa_logits(
                 q_fp8,
                 kv_cache_fp8,
                 weights,
                 out_logits,
-                prefix_sum_context_lens,
-                kv_indices,
+                context_lens,
+                block_tables,
                 max_model_len,
-                ChunkK,
+                ChunkK=ChunkK,
+                Preshuffle=Preshuffle,
+                KVBlockSize=blocksize,
             )
 
-        out_qk_logits = torch.sum(out_qk, dim=0)
+            kernel_suffix = (
+                f"_B{"1" if batch_size == 1 else "X"}N{"1" if next_n == 1 else "X"}"
+            )
+            kernel_base = (
+                "_gluon_deepgemm_fp8_paged_mqa_logits"
+                if not Preshuffle
+                else "_gluon_deepgemm_fp8_paged_mqa_logits_preshuffle"
+            )
+            aot_kernel_name = kernel_base + kernel_suffix
+            global cache_name2dir
+            cache_name2dir += [(aot_kernel_name, cache_key)]
 
         positions = (
             torch.arange(max_model_len, device="cuda")
@@ -346,14 +344,11 @@ def run_benchmark(args: argparse.Namespace):
             return 1 - sim
 
         out_logits = out_logits.masked_fill(~mask, 0)
-        out_qk_logits = out_qk_logits.masked_fill(~mask, 0)
         ref_logits = ref_logits.masked_fill(~mask, 0)
 
-        # qk_diff = calc_diff(out_qk_logits, ref_logits)
         logits_diff = calc_diff(out_logits, ref_logits)
 
         print(">>>! logits_diff = ", logits_diff)
-        # assert qk_diff < 1e-3
         # assert logits_diff < 1e-3
 
         total_float_operations = (
@@ -370,6 +365,25 @@ def run_benchmark(args: argparse.Namespace):
         return flops
 
     test_deepgemm_fp8_paged_mqa_logits.run(print_data=True)
+
+    if args.aot:
+        triton_cache_dir = str(triton.knobs.cache.dir)
+        aot_kernel_dir = f"./paged_mqa_logits/aot"
+
+        os.makedirs(aot_kernel_dir, exist_ok=True)
+        for aot_name, cache_dir in cache_name2dir:
+            print(f"## Cache Key: {aot_name} -> {cache_dir}")
+            # move cache_dir folder to ./ and change name to aot_name
+            if triton_cache_dir is not None:
+                src = os.path.join(triton_cache_dir, cache_dir)
+                dst = os.path.join(aot_kernel_dir, aot_name)
+                if os.path.exists(dst):
+                    os.system(f"rm -rf {dst}")
+                os.system(f"mv {src} {dst}")
+                print(f"Moved cache from {src} to {dst}")
+            else:
+                raise RuntimeError("Triton cache directory is None.")
+        os.system(f"zip -r paged_mqa_logits_aot_kernel paged_mqa_logits")
 
 
 if __name__ == "__main__":
@@ -406,5 +420,16 @@ if __name__ == "__main__":
         action="store_true",
         help="Padding ",
     )
+    parser.add_argument(
+        "-aot",
+        action="store_true",
+        help="Padding ",
+    )
+    # parser.add_argument(
+    #     "--blocksize",
+    #     type=int,
+    #     default=1,
+    #     help="Blocksize for KV cache storage (only 1 or 16), enable preshuffle when blocksize==16",
+    # )
     args = parser.parse_args()
     run_benchmark(args)
