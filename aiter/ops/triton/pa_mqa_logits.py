@@ -200,10 +200,9 @@ def deepgemm_fp8_paged_mqa_logits(
         "ChunkK": ChunkK,
         "KVBlockSize": KVBlockSize,
         "HiddenDim": hidden_dim,
-        "SplitKV": SplitKV,
     }
 
-    grid = (batch_size * next_n * config["SplitKV"],)
+    grid = (batch_size * next_n * SplitKV,)
     if Preshuffle:
         assert KVBlockSize == 16
         metadata_pth = f"{AITER_TRITON_CONFIGS_PATH}/paged_mqa_logits/aot/{_gluon_deepgemm_fp8_paged_mqa_logits_preshuffle.fn.__name__}_B{"1" if batch_size == 1 else "X"}N{"1" if next_n == 1 else "X"}"
@@ -233,6 +232,8 @@ def deepgemm_fp8_paged_mqa_logits(
                 out_logits.stride(0),
                 max_model_len,
                 max_block_len,
+                SplitKV,
+                out_logits, # dummy param, must be a pointer type
                 waves_per_eu=WavePerEU,
                 **config,
             )
@@ -273,6 +274,8 @@ def deepgemm_fp8_paged_mqa_logits(
                 out_logits.stride(0),
                 max_model_len,
                 max_block_len,
+                SplitKV,
+                out_logits, # dummy param, must be a pointer type
                 waves_per_eu=WavePerEU,
                 **config,
             )

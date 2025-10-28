@@ -258,12 +258,6 @@ def run_benchmark(args: argparse.Namespace):
                 max_model_len,
             )
 
-        out_qk = torch.full(
-            (heads, batch_size * next_n, max_model_len),
-            float("-inf"),
-            device="cuda",
-            dtype=torch.float32,
-        )
         out_logits = torch.full(
             (batch_size * next_n, max_model_len),
             float("-inf"),
@@ -302,7 +296,6 @@ def run_benchmark(args: argparse.Namespace):
                 ChunkK=ChunkK,
                 Preshuffle=Preshuffle,
                 KVBlockSize=blocksize,
-                num_iters=5,
             )
         else:
             # deepgemm_fp8_paged_mqa_logits_stage1_ragged_k(
@@ -326,7 +319,7 @@ def run_benchmark(args: argparse.Namespace):
                 ChunkK,
             )
 
-        out_qk_logits = torch.sum(out_qk, dim=0)
+
 
         positions = (
             torch.arange(max_model_len, device="cuda")
@@ -346,10 +339,8 @@ def run_benchmark(args: argparse.Namespace):
             return 1 - sim
 
         out_logits = out_logits.masked_fill(~mask, 0)
-        out_qk_logits = out_qk_logits.masked_fill(~mask, 0)
         ref_logits = ref_logits.masked_fill(~mask, 0)
 
-        # qk_diff = calc_diff(out_qk_logits, ref_logits)
         logits_diff = calc_diff(out_logits, ref_logits)
 
         print(">>>! logits_diff = ", logits_diff)
