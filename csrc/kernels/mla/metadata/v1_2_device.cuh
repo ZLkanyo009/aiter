@@ -39,7 +39,8 @@ __global__ void kn_get_mla_metadata_v1_2(
     int32_t sum_blocks = 0;
     for (int32_t bid = lane_idx; bid < params.num_batches; bid += ck_tile::get_warp_size())
     {
-        const int32_t bid_ori   = Traits::kIsSparse ? (bid / params.ori_seqlen_qo) : bid;
+        const int32_t bid_ori   = Traits::kIsSparse ? (bid / params.ori_seqlen_qo / params.qk_batch_ratio)
+                                                    : (bid / params.qk_batch_ratio);
         const int32_t kv_end    = params.p_seqlens_kv_indptr[bid_ori + 1];
         const int32_t seqlen_kv = kv_end - params.p_seqlens_kv_indptr[bid_ori];
 
@@ -73,6 +74,7 @@ __global__ void kn_get_mla_metadata_v1_2(
     int32_t curr_batch = 0;         // batch ID of the batch which is under review
     int32_t curr_kv_block = 0;      // #blocks handled by previous cu part(s)
     int32_t curr_n_split_idx = 0;   // #cu parts used to handle current batch
+    int32_t curr_sub_head_idx = curr_batch % params.qk_batch_ratio;
 
     int32_t curr_kv_begin  = 0;
     // The size of 1st element equals to the end loc of the 1st element.
@@ -189,13 +191,17 @@ __global__ void kn_get_mla_metadata_v1_2(
                 // update state
                 remain_payload -= (remain_kv_blocks + Traits::kFixedOverheadNumBlocks);
                 ++curr_batch;
+                curr_sub_head_idx = curr_batch % params.qk_batch_ratio;
                 if (curr_batch < params.num_batches)
                 {
+                    if ((curr_batch % params.qk_batch_ratio) == 0)
+                    {
+                        curr_kv_seqlen = p_lds_seqlens_kv[curr_batch];
+                        curr_kv_begin = Traits::kIsSparse ? curr_batch * params.topk : curr_kv_end;
+                        curr_kv_end = curr_kv_begin + curr_kv_seqlen;
+                    }
                     curr_kv_block = 0;
                     curr_n_split_idx = 0;
-                    curr_kv_seqlen = p_lds_seqlens_kv[curr_batch];
-                    curr_kv_begin = Traits::kIsSparse ? curr_batch * params.topk : curr_kv_end;
-                    curr_kv_end = curr_kv_begin + curr_kv_seqlen;
                 }
             }
             else
@@ -214,7 +220,7 @@ __global__ void kn_get_mla_metadata_v1_2(
                         work_info.kv_start = curr_kv_begin + (curr_kv_block * params.kv_granularity);
                         work_info.kv_end =
                             ck_tile::min(work_info.kv_start + (consuming_blks * params.kv_granularity),
-                            curr_kv_end - (num_qo_tiles - 1 - qo_tile_idx));
+                                         curr_kv_end - (num_qo_tiles - 1 - qo_tile_idx));
                         work_info.kv_offset = curr_kv_end - work_info.kv_end;
                         work_info.partial_qo_loc = partial_idx + qo_tile_idx * qo_tile_size;
                         p_work_info_set[num_works + qo_tile_idx] = work_info;
@@ -293,6 +299,19 @@ void get_mla_metadata_v1_2_device(
     hipGetDevice(&dev);
     hipGetDeviceProperties(&dev_prop, dev);
 
+    // In the following cases, we use #head=16 to simulate cases which is not natively supported by mla main kernel.
+    int32_t num_heads = num_heads_k * num_heads_per_head_k;
+    int32_t qk_batch_ratio = 1;
+    if ((num_heads != 16) && (num_heads != 128) &&  // main kernel natively supports #head=16 or #head=128
+        (num_heads % 16 == 0) && (num_heads < 128))
+    {
+        qk_batch_ratio = num_heads / 16;
+        num_heads = 16;
+    }
+
+    TORCH_CHECK((num_heads == 16) || (num_heads == 128), __func__,
+                ": only supports #heads in [16, 128], or (#head, uni_seqlen_qo) = (16*N, 1) where N is in [2, 8).")
+
     const int32_t num_clusters = dev_prop.multiProcessorCount / num_heads_k;
     const int32_t num_batches  = seqlens_kv_indptr.size(0) - 1;
     const bool is_sparse       = (topk >= 0);
@@ -306,7 +325,8 @@ void get_mla_metadata_v1_2_device(
     params.p_reduce_partial_map = reduce_partial_map.data_ptr<int32_t>();
     params.p_seqlens_qo_indptr  = seqlens_qo_indptr.data_ptr<int32_t>();
     params.p_seqlens_kv_indptr  = seqlens_kv_indptr.data_ptr<int32_t>();
-    params.num_batches          = is_sparse ? (uni_seqlen_qo * num_batches) : num_batches;
+    params.num_batches          = is_sparse ? (uni_seqlen_qo * num_batches * qk_batch_ratio)
+                                            : (num_batches * qk_batch_ratio);
     params.num_heads            = num_heads_k * num_heads_per_head_k;
     params.num_cu               = num_clusters;
     params.reduce_indptr_size   = reduce_indptr.size(0);
@@ -316,6 +336,7 @@ void get_mla_metadata_v1_2_device(
     params.ori_seqlen_qo        = is_sparse ? uni_seqlen_qo : 0; // not used in non-sparse attn
     params.is_causal            = is_causal;
     params.topk                 = topk;
+    params.qk_batch_ratio       = qk_batch_ratio;
 
     // launch kernel
     MLA_METADATA_DISPATCHER(
