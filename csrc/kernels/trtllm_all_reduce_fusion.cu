@@ -435,10 +435,14 @@ __global__ void allreduce_fusion_kernel_twoshot_direct(AllReduceFusionParams<T> 
                 val_fp8.store(reinterpret_cast<hip_fp8 *>(params.norm_out) + idx);
                 if (threadIdx.x == 0)
 <<<<<<< HEAD
+<<<<<<< HEAD
                     reinterpret_cast<float *>(params.fp8_scale_out)[tidx] = scale;
 =======
                     reinterpret_cast<float *>(params.fp8_scale_out)[token_id] = scale;
 >>>>>>> a607eeb1 (add fp8 per token quant)
+=======
+                    reinterpret_cast<float *>(params.fp8_scale_out)[tidx] = scale;
+>>>>>>> 9437ec9f (fix scale acc issue)
             } else {
                 val.store(reinterpret_cast<T *>(params.norm_out) + idx);
             }
@@ -592,10 +596,14 @@ __global__ void allreduce_fusion_kernel_oneshot_lamport(AllReduceFusionParams<T>
             val_fp8.store(reinterpret_cast<hip_fp8 *>(params.norm_out) + idx);
             if (threadIdx.x == 0)
 <<<<<<< HEAD
+<<<<<<< HEAD
                 reinterpret_cast<float *>(params.fp8_scale_out)[tidx] = scale;
 =======
                 reinterpret_cast<float *>(params.fp8_scale_out)[token_id] = scale;
 >>>>>>> a607eeb1 (add fp8 per token quant)
+=======
+                reinterpret_cast<float *>(params.fp8_scale_out)[tidx] = scale;
+>>>>>>> 9437ec9f (fix scale acc issue)
         } else {
             val.store(reinterpret_cast<T *>(params.norm_out) + idx);
         }
