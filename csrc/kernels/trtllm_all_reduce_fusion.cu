@@ -434,7 +434,11 @@ __global__ void allreduce_fusion_kernel_twoshot_direct(AllReduceFusionParams<T> 
                 auto val_fp8 = convert_to_fp8<T, VEC_SIZE>(val, scale);
                 val_fp8.store(reinterpret_cast<hip_fp8 *>(params.norm_out) + idx);
                 if (threadIdx.x == 0)
+<<<<<<< HEAD
                     reinterpret_cast<float *>(params.fp8_scale_out)[tidx] = scale;
+=======
+                    reinterpret_cast<float *>(params.fp8_scale_out)[token_id] = scale;
+>>>>>>> a607eeb1 (add fp8 per token quant)
             } else {
                 val.store(reinterpret_cast<T *>(params.norm_out) + idx);
             }
@@ -587,7 +591,11 @@ __global__ void allreduce_fusion_kernel_oneshot_lamport(AllReduceFusionParams<T>
             auto val_fp8 = convert_to_fp8<T, VEC_SIZE>(val, scale);
             val_fp8.store(reinterpret_cast<hip_fp8 *>(params.norm_out) + idx);
             if (threadIdx.x == 0)
+<<<<<<< HEAD
                 reinterpret_cast<float *>(params.fp8_scale_out)[tidx] = scale;
+=======
+                reinterpret_cast<float *>(params.fp8_scale_out)[token_id] = scale;
+>>>>>>> a607eeb1 (add fp8 per token quant)
         } else {
             val.store(reinterpret_cast<T *>(params.norm_out) + idx);
         }
@@ -610,8 +618,12 @@ void allreduce_fusion_kernel_launcher(AllReduceFusionParams<T> const &params, hi
     if (params.size * sizeof(T) >= 1024*1024*128) {
 =======
     int nblocks = NBLOCKS_PER_GPU;
+<<<<<<< HEAD
     if (params.size * sizeof(T) > 1024*1024*128) {
 >>>>>>> 917945bd (fix bugs)
+=======
+    if (params.size * sizeof(T) >= 1024*1024*128) {
+>>>>>>> a607eeb1 (add fp8 per token quant)
         nblocks /= 2;
     }
     dim3 numBlocks(nblocks);
