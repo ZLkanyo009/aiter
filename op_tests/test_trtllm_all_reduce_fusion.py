@@ -9,7 +9,7 @@ from aiter.test_common import checkAllclose
 
 
 envs = {
-    "HIP_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7",
+    "HIP_VISIBLE_DEVICES": "1,2,3,4,5,6,7",
 }
 for k, v in envs.items():
     os.environ[k] = v
@@ -28,7 +28,7 @@ class DistributedEnv:
         torch.cuda.set_device(rank)
         dist.init_process_group(
             backend="nccl",
-            init_method="tcp://127.0.0.1:22229",
+            init_method="tcp://127.0.0.1:22129",
             rank=rank,
             world_size=world_size,
         )
@@ -112,23 +112,13 @@ def worker(
         with prof:
             dist_env.barrier()
             start_native = time.time()
-            ref_residual_out, ref_norm_out, ref_scale_out = (
-                dist_env.allreduce_add_rms_native(
-                    local_allreduce_in.clone(),
-                    local_residual_in,
-                    local_rms_weight,
-                    eps,
-                    True,
-                )
+            ref_residual_out, ref_norm_out = dist_env.allreduce_add_rms_native(
+                local_allreduce_in.clone(), local_residual_in, local_rms_weight, eps
             )
             dist_env.barrier()
             start_fused = time.time()
-            residual_out, norm_out, scale_out = dist_env.allreduce_add_rms_fused(
-                local_allreduce_in.clone(),
-                local_residual_in,
-                local_rms_weight,
-                eps,
-                True,
+            residual_out, norm_out = dist_env.allreduce_add_rms_fused(
+                local_allreduce_in.clone(), local_residual_in, local_rms_weight, eps
             )
             dist_env.barrier()
             end = time.time()
@@ -209,36 +199,16 @@ def main(world_size=4):
     )
 
     num_tokens = 129
-    testcase(
-        world_size=world_size, num_tokens=num_tokens, hidden_dim=1024, dtype=torch.float
-    )
-    testcase(
-        world_size=world_size,
-        num_tokens=num_tokens,
-        hidden_dim=1024,
-        dtype=torch.bfloat16,
-    )
-    testcase(
-        world_size=world_size, num_tokens=num_tokens, hidden_dim=1024, dtype=torch.half
-    )
+    testcase(world_size=4, num_tokens=num_tokens, hidden_dim=1024, dtype=torch.float)
+    testcase(world_size=4, num_tokens=num_tokens, hidden_dim=1024, dtype=torch.bfloat16)
+    testcase(world_size=4, num_tokens=num_tokens, hidden_dim=1024, dtype=torch.half)
 
     num_tokens = 128
-    testcase(
-        world_size=world_size, num_tokens=num_tokens, hidden_dim=1024, dtype=torch.float
-    )
-    testcase(
-        world_size=world_size, num_tokens=num_tokens, hidden_dim=1024, dtype=torch.half
-    )
-    testcase(
-        world_size=world_size,
-        num_tokens=num_tokens,
-        hidden_dim=1024,
-        dtype=torch.bfloat16,
-    )
+    testcase(world_size=4, num_tokens=num_tokens, hidden_dim=1024, dtype=torch.float)
+    testcase(world_size=4, num_tokens=num_tokens, hidden_dim=1024, dtype=torch.half)
+    testcase(world_size=4, num_tokens=num_tokens, hidden_dim=1024, dtype=torch.bfloat16)
 
-    testcase(
-        world_size=world_size, num_tokens=32768, hidden_dim=4096, dtype=torch.bfloat16
-    )
+    testcase(world_size=4, num_tokens=32768, hidden_dim=4096, dtype=torch.bfloat16)
 
 
 if __name__ == "__main__":
