@@ -392,74 +392,10 @@ struct LamportComm {
 
 } // namespace comm
 
-<<<<<<< HEAD
 enum QuantType {
     NONE = 0,
     FP8E4M3FN = 1,
     FP8E4M3FNUZ = 2,
-=======
-template <typename T, int vec_size>
-struct alignas(sizeof(T) * vec_size) vec_t {
-    T data[vec_size];
-    __device__ __forceinline__ T &operator[](int i) {
-        return data[i];
-    }
-    __device__ __forceinline__ T const &operator[](int i) const {
-        return data[i];
-    }
-    __device__ __forceinline__ void load(const T *ptr) {
-        *this = *reinterpret_cast<vec_t<T, vec_size> *>(const_cast<T *>(ptr));
-    }
-    __device__ __forceinline__ void store(T *ptr) {
-        *reinterpret_cast<vec_t<T, vec_size> *>(ptr) = *this;
-    }
-    __device__ __forceinline__ void nontemporal_load(const T *ptr) {
-        constexpr int ITERS = vec_size * sizeof(T) / sizeof(uint32_t);
-#pragma unroll
-        for (int i = 0; i < ITERS; ++i) {
-            reinterpret_cast<uint32_t *>(&data)[i] = __builtin_nontemporal_load((uint32_t *)ptr + i);
-        }
-    }
-    __device__ __forceinline__ void nontemporal_store(T *ptr) {
-        constexpr int ITERS = vec_size * sizeof(T) / sizeof(uint32_t);
-#pragma unroll
-        for (int i = 0; i < ITERS; ++i) {
-            __builtin_nontemporal_store(reinterpret_cast<uint32_t *>(&data)[i], (uint32_t *)ptr + i);
-        }
-    }
-    __device__ __forceinline__ void volatile_load(const T *ptr) {
-        constexpr int ITERS = vec_size * sizeof(T) / sizeof(uint32_t);
-#pragma unroll
-        for (int i = 0; i < ITERS; ++i) {
-            reinterpret_cast<uint32_t *>(&data)[i] = __scoped_atomic_load_n((uint32_t *)ptr + i,
-                                                                            __ATOMIC_ACQUIRE,
-                                                                            __MEMORY_SCOPE_SYSTEM);
-        }
-    }
-    __device__ __forceinline__ void volatile_store(T *ptr) {
-        constexpr int ITERS = vec_size * sizeof(T) / sizeof(uint32_t);
-#pragma unroll
-        for (int i = 0; i < ITERS; ++i) {
-            __scoped_atomic_store_n((uint32_t *)ptr + i,
-                                    reinterpret_cast<uint32_t *>(&data)[i],
-                                    __ATOMIC_RELEASE,
-                                    __MEMORY_SCOPE_SYSTEM);
-        }
-    }
-    __device__ __forceinline__ void fill(T val) {
-#pragma unroll
-        for (int i = 0; i < vec_size; ++i) {
-            data[i] = val;
-        }
-    }
-    template <typename VT>
-    __device__ __forceinline__ void cast_fill(VT val) {
-#pragma unroll
-        for (int i = 0; i < vec_size; ++i) {
-            *reinterpret_cast<VT*>(&data[i]) = val;
-        }
-    }
->>>>>>> 917945bd (fix bugs)
 };
 
 template <typename T>
@@ -587,28 +523,8 @@ __global__ void allreduce_fusion_kernel_twoshot_direct(AllReduceFusionParams<T> 
             data[1].load(reinterpret_cast<T *>(comm.comm_bufs[params.rank]) + params.size + idx);
             vec_add_<T, VEC_SIZE>(data[0], data[1]);
             data[0].store(reinterpret_cast<T *>(params.residual_out) + idx);
-<<<<<<< HEAD
-            auto val = rms_norm<T, VEC_SIZE>(params, data[0], gamma);
-            if (params.fp8_out) {
-                float scale = reduce_abs_max<T, VEC_SIZE>(val);
-                scale = scale == 0.f ? 1.f : scale / details::FP8_E4M3_MAX;
-                auto val_fp8 = convert_to_fp8<T, VEC_SIZE>(val, scale);
-                val_fp8.store(reinterpret_cast<hip_fp8 *>(params.norm_out) + idx);
-                if (threadIdx.x == 0)
-<<<<<<< HEAD
-<<<<<<< HEAD
-                    reinterpret_cast<float *>(params.fp8_scale_out)[tidx] = scale;
-=======
-                    reinterpret_cast<float *>(params.fp8_scale_out)[token_id] = scale;
->>>>>>> a607eeb1 (add fp8 per token quant)
-=======
-                    reinterpret_cast<float *>(params.fp8_scale_out)[tidx] = scale;
->>>>>>> 9437ec9f (fix scale acc issue)
-            } else {
-=======
             if (params.quant_type == QuantType::NONE) {
                 auto val = rms_norm<T, VEC_SIZE, T>(params, data[0], gamma);
->>>>>>> 574525f9 (change interface)
                 val.store(reinterpret_cast<T *>(params.norm_out) + idx);
             } else {
                 auto val = rms_norm<T, VEC_SIZE, float>(params, data[0], gamma);
@@ -766,28 +682,8 @@ __global__ void allreduce_fusion_kernel_oneshot_lamport(AllReduceFusionParams<T>
         vec_add_r_<T, VEC_SIZE, NRanks>(vals);
         vec_add_<T, VEC_SIZE>(vals[0], residual);
         vals[0].store(reinterpret_cast<T *>(params.residual_out) + idx);
-<<<<<<< HEAD
-        auto val = rms_norm<T, VEC_SIZE>(params, vals[0], gamma);
-        if (params.fp8_out) {
-            float scale = reduce_abs_max<T, VEC_SIZE>(val);
-            scale = scale == 0.f ? 1.f : scale / details::FP8_E4M3_MAX;
-            auto val_fp8 = convert_to_fp8<T, VEC_SIZE>(val, scale);
-            val_fp8.store(reinterpret_cast<hip_fp8 *>(params.norm_out) + idx);
-            if (threadIdx.x == 0)
-<<<<<<< HEAD
-<<<<<<< HEAD
-                reinterpret_cast<float *>(params.fp8_scale_out)[tidx] = scale;
-=======
-                reinterpret_cast<float *>(params.fp8_scale_out)[token_id] = scale;
->>>>>>> a607eeb1 (add fp8 per token quant)
-=======
-                reinterpret_cast<float *>(params.fp8_scale_out)[tidx] = scale;
->>>>>>> 9437ec9f (fix scale acc issue)
-        } else {
-=======
         if (params.quant_type == QuantType::NONE) {
             auto val = rms_norm<T, VEC_SIZE, T>(params, vals[0], gamma);
->>>>>>> 574525f9 (change interface)
             val.store(reinterpret_cast<T *>(params.norm_out) + idx);
         } else {
             auto val = rms_norm<T, VEC_SIZE, float>(params, vals[0], gamma);
@@ -819,29 +715,8 @@ void allreduce_fusion_kernel_launcher(AllReduceFusionParams<T> const &params,
     int threads_per_token = params.hidden_dim / VEC_SIZE;
     int threads_per_block = threads_per_token;
     dim3 threadsPerBlock(threads_per_block);
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> c538aece (refine code)
     int nblocks = std::min(token_num, NBLOCKS_PER_GPU);
-<<<<<<< HEAD
-    if (params.size * sizeof(T) >= 1024*1024*128) {
-=======
-    int nblocks = NBLOCKS_PER_GPU;
-<<<<<<< HEAD
-    if (params.size * sizeof(T) > 1024*1024*128) {
->>>>>>> 917945bd (fix bugs)
-=======
-    if (params.size * sizeof(T) >= 1024*1024*128) {
->>>>>>> a607eeb1 (add fp8 per token quant)
-=======
     if (params.size * sizeof(T) >= 1024 * 1024 * 128) {
->>>>>>> 574525f9 (change interface)
-=======
-    int nblocks = NBLOCKS_PER_GPU;
-    if (params.size * sizeof(T) > 1024*1024*128) {
->>>>>>> 917945bd (fix bugs)
         nblocks /= 2;
     }
     dim3 numBlocks(nblocks);
