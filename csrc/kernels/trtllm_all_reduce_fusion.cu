@@ -475,8 +475,6 @@ __global__ void allreduce_fusion_kernel_twoshot_direct(AllReduceFusionParams<T> 
     static constexpr int VEC_SIZE = details::kBytesPerAccess / sizeof(T);
 
     int access_id_in_token = threadIdx.x * VEC_SIZE;
-    int access_id_begin =
-        (blockIdx.x * NRanks + 0) * params.hidden_dim + access_id_in_token;
 
     vec_t<T, VEC_SIZE> gamma;
     gamma.load(reinterpret_cast<T *>(params.rms_gamma) + access_id_in_token);
@@ -543,6 +541,60 @@ __global__ void allreduce_fusion_kernel_twoshot_direct(AllReduceFusionParams<T> 
             }
         }
     }
+
+    comm.update(barrier.m_flag_value);
+}
+
+template <typename T, int NRanks>
+__global__ void allreduce_fusion_kernel_twoshot_single_load(AllReduceFusionParams<T> params) {
+    static constexpr int VEC_SIZE = details::kBytesPerAccess / sizeof(T);
+
+    int access_id_in_token = threadIdx.x * VEC_SIZE;
+
+    vec_t<T, VEC_SIZE> gamma;
+    gamma.load(reinterpret_cast<T *>(params.rms_gamma) + access_id_in_token);
+
+    comm::SyncComm<NRanks> comm(params.workspace);
+
+    int idx = blockIdx.x * params.hidden_dim + access_id_in_token;
+        reinterpret_cast<float4 *>(comm.comm_bufs[params.rank])[idx / VEC_SIZE] =
+            reinterpret_cast<float4 *>(params.allreduce_in)[idx / VEC_SIZE];
+
+    comm::Barrier<NRanks> barrier(params.rank, comm);
+    barrier.sync();
+
+    // cross-device load
+    vec_t<T, VEC_SIZE> vals[NRanks];
+#pragma unroll
+        for (int r = 0; r < NRanks; ++r) {
+            vals[r].load(reinterpret_cast<T *>(comm.comm_bufs[r]) + idx);
+        }
+        vec_add_r_<T, VEC_SIZE, NRanks>(vals);
+    __syncthreads();
+
+    int tidx = blockIdx.x;
+        vec_t<T, VEC_SIZE> residual;
+        residual.load(reinterpret_cast<T *>(params.residual_in) + idx);
+        vec_add_<T, VEC_SIZE>(residual, vals[0]);
+        residual.store(reinterpret_cast<T *>(params.residual_out) + idx);
+        if (params.quant_type == QuantType::NONE) {
+            auto val = rms_norm<T, VEC_SIZE, T>(params, residual, gamma);
+            val.store(reinterpret_cast<T *>(params.norm_out) + idx);
+        } else {
+            auto val = rms_norm<T, VEC_SIZE, float>(params, residual, gamma);
+            float scale = reduce_abs_max<float, VEC_SIZE>(val);
+            if (params.quant_type == QuantType::FP8E4M3FN) {
+                scale = scale == 0.f ? 1.f : scale / (float)fp8e4m3fn::max_value;
+                auto val_fp8 = convert_to_fp8<float, VEC_SIZE, fp8e4m3fn>(val, scale);
+                val_fp8.store(reinterpret_cast<fp8e4m3fn *>(params.norm_out) + idx);
+            } else {
+                scale = scale == 0.f ? 1.f : scale / (float)fp8e4m3fnuz::max_value;
+                auto val_fp8 = convert_to_fp8<float, VEC_SIZE, fp8e4m3fnuz>(val, scale);
+                val_fp8.store(reinterpret_cast<fp8e4m3fnuz *>(params.norm_out) + idx);
+            }
+            if (threadIdx.x == 0)
+                reinterpret_cast<float *>(params.scale_out)[tidx] = scale;
+        }
 
     comm.update(barrier.m_flag_value);
 }
@@ -725,8 +777,10 @@ void allreduce_fusion_kernel_launcher(AllReduceFusionParams<T> const &params,
         // gpuLaunchCooperativeKernel(
         //     allreduce_fusion_kernel_oneshot_lamport<T, NRanks>, numBlocks,
         //     threadsPerBlock, args, 0, stream);
-        allreduce_fusion_kernel_oneshot_lamport<T, NRanks><<<numBlocks,
-        threadsPerBlock, 0, stream>>>(params);
+        // allreduce_fusion_kernel_oneshot_lamport<T, NRanks><<<numBlocks,
+        // threadsPerBlock, 0, stream>>>(params);
+        // std::cout << "into allreduce_fusion_kernel_twoshot_single_load\n";
+        allreduce_fusion_kernel_twoshot_single_load<T, NRanks><<<numBlocks, threadsPerBlock, 0, stream>>>(params);
     } else {
         // gpuLaunchCooperativeKernel(
         //     allreduce_fusion_kernel_twoshot_direct<T, NRanks>, numBlocks,
