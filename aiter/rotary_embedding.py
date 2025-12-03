@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 from dataclasses import dataclass
-from aiter import dtypes, fused_mrope_3d_rms
+from aiter import dtypes, fused_mrope_3d_rms, fused_mrope_3d_rms_set_kv
 
 # from custom_op import CustomOp
 
@@ -1260,9 +1260,7 @@ class MRotaryEmbeddingQKNormFused(nn.Module):
         assert is_interleaved == self.mrope_interleaved
         if fused_set_kv_buffer_arg is not None:
             q_out = torch.empty(num_tokens, num_heads_q, self.head_size, dtype=qkv.dtype, device=qkv.device)
-            # for debug
-            import gpuk
-            gpuk.fused_mrope_3d_rms_set_kv(
+            fused_mrope_3d_rms_set_kv(
                 qkv,
                 q_weight,
                 k_weight,
