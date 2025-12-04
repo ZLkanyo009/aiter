@@ -831,7 +831,6 @@ def fused_moe_2stages(
             device=device,
         )
 
-    # print(f'{sorted_ids.shape[0]=}, {sorted_expert_ids=}, {num_valid_ids=}')
     a2 = metadata.stage1(
         a1,
         w1,
