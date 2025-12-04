@@ -23,7 +23,7 @@ __inline__ __device__ T warp_reduce_sum(T val) {
 
 template <typename T>
 __inline__ __device__ T warp_shfl_sync(T val, int src_id) {
-    return __shfl_sync(__activemask(), val, src_id, 32);
+    return __shfl(val, src_id, 32);
 }
 
 } // namespace block_utils
@@ -106,7 +106,7 @@ __device__ __forceinline__ void warp_rms_norm_(
     int warp_t_id = threadIdx.x % 32;
     acc = block_utils::warp_reduce_sum<float>(acc);
     acc = block_utils::warp_shfl_sync<float>(acc, 0);
-    __syncwarp();
+    //__syncwarp();
     auto s_val = rsqrtf(acc / rms_dim + rms_eps);
 #pragma unroll
     for (int i = 0; i < VEC_SIZE; ++i) {
