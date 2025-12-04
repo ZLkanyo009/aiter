@@ -27,7 +27,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from aiter import dtypes, fused_mrope_3d_rms
+from dataclasses import dataclass
+from aiter import dtypes, fused_mrope_3d_rms, fused_mrope_3d_rms_set_kv
 
 # from custom_op import CustomOp
 
@@ -77,7 +78,6 @@ def _apply_rotary_emb(
         return torch.cat((o1, o2), dim=-1)
     else:
         return torch.stack((o1, o2), dim=-1).flatten(-2)
-
 
 # class RotaryEmbedding(CustomOp):
 class RotaryEmbedding(nn.Module):
@@ -1143,6 +1143,12 @@ class MRotaryEmbedding(RotaryEmbedding):
             for _ in range(3)
         ]
 
+@dataclass
+class AiterFusedSetKVBufferArg:
+    kv_cache: Tuple[torch.Tensor, torch.Tensor]
+    cache_loc: torch.Tensor
+    k_scale: float
+    v_scale: float
 
 class MRotaryEmbeddingQKNormFused(nn.Module):
     """Rotary Embedding with Multimodal Sections fused with QKNorm"""
@@ -1241,7 +1247,8 @@ class MRotaryEmbeddingQKNormFused(nn.Module):
         num_heads: int,
         num_kv_heads: int,
         eps: float,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        fused_set_kv_buffer_arg: Optional[AiterFusedSetKVBufferArg] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         assert positions.ndim == 1 or positions.ndim == 2
         num_tokens = positions.shape[-1]
         num_heads_q = num_heads
@@ -1251,29 +1258,56 @@ class MRotaryEmbeddingQKNormFused(nn.Module):
             True if positions.ndim == 2 and self.mrope_section is not None else False
         )
         assert is_interleaved == self.mrope_interleaved
-        fused_mrope_3d_rms(
-            qkv,
-            q_weight,
-            k_weight,
-            self.cos_sin_cache,
-            positions,
-            num_tokens,
-            num_heads_q,
-            num_heads_k,
-            num_heads_v,
-            self.head_size,
-            self.is_neox_style,
-            self.mrope_section,
-            is_interleaved,
-            eps,
-        )
-        q_size = num_heads_q * self.head_size
-        k_size = num_heads_k * self.head_size
-        v_size = num_heads_v * self.head_size
+        if fused_set_kv_buffer_arg is not None:
+            q_out = torch.empty(num_tokens, num_heads_q, self.head_size, dtype=qkv.dtype, device=qkv.device)
+            fused_mrope_3d_rms_set_kv(
+                qkv,
+                q_weight,
+                k_weight,
+                self.cos_sin_cache,
+                positions,
+                num_tokens,
+                num_heads_q,
+                num_heads_k,
+                num_heads_v,
+                self.head_size,
+                self.is_neox_style,
+                self.mrope_section,
+                is_interleaved,
+                eps,
+                q_out,
+                fused_set_kv_buffer_arg.kv_cache[0],
+                fused_set_kv_buffer_arg.kv_cache[1],
+                fused_set_kv_buffer_arg.cache_loc,
+                fused_set_kv_buffer_arg.k_scale,
+                fused_set_kv_buffer_arg.v_scale,
+            )
+            return q_out, None, None
+        else:
+            fused_mrope_3d_rms(
+                qkv,
+                q_weight,
+                k_weight,
+                self.cos_sin_cache,
+                positions,
+                num_tokens,
+                num_heads_q,
+                num_heads_k,
+                num_heads_v,
+                self.head_size,
+                self.is_neox_style,
+                self.mrope_section,
+                is_interleaved,
+                eps,
+            )
+            q_size = num_heads_q * self.head_size
+            k_size = num_heads_k * self.head_size
+            v_size = num_heads_v * self.head_size
 
-        qkv = qkv.view(num_tokens, q_size + k_size + v_size)
-        q, k, v = qkv.split([q_size, k_size, v_size], dim=-1)
-        return q, k, v
+            qkv = qkv.view(num_tokens, q_size + k_size + v_size)
+            q, k, v = qkv.split([q_size, k_size, v_size], dim=-1)
+
+            return q, k, v
 
 
 class DualChunkRotaryEmbedding(nn.Module):
