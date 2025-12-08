@@ -22,6 +22,16 @@ namespace py = pybind11;
           "Activation function used in GELU.",          \
           py::arg("out"),                               \
           py::arg("input"));                            \
+    m.def("gelu_fast",                                   \
+          &aiter::gelu_fast,                             \
+          "Activation function used in GELU fast.",      \
+          py::arg("out"),                               \
+          py::arg("input"));                            \
+    m.def("gelu_new",                                   \
+          &aiter::gelu_new,                             \
+          "Activation function used in GELU new.",      \
+          py::arg("out"),                               \
+          py::arg("input"));                            \
     m.def("gelu_tanh_and_mul",                          \
           &aiter::gelu_tanh_and_mul,                    \
           "Activation function used in GELU tanh.",     \
