@@ -47,3 +47,19 @@ def fused_mrope_3d_rms_set_kv(
     k_scale: float,
     v_scale: float,
 ) -> None: ...
+
+@compile_ops("module_fused_mrope_rms")
+def fused_rope_rms(
+    qkv: Tensor,
+    qw: Tensor,
+    kw: Tensor,
+    cos_sin: Tensor,
+    positions: Tensor,
+    num_tokens: int,
+    num_heads_q: int,
+    num_heads_k: int,
+    num_heads_v: int,
+    head_size: int,
+    is_neox_style: bool,
+    eps: float,
+) -> None: ...

@@ -1236,6 +1236,7 @@ namespace py = pybind11;
 #define FUSED_MROPE_RMS_PYBIND                        \
     m.def("fused_mrope_3d_rms", &fused_mrope_3d_rms); \
     m.def("fused_mrope_3d_rms_set_kv", &fused_mrope_3d_rms_set_kv);
+    m.def("fused_rope_rms", &fused_rope_rms);
 
 #define SMOOTHQUANT_PYBIND                      \
     m.def("smoothquant_fwd", &smoothquant_fwd); \
