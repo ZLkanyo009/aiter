@@ -24,6 +24,8 @@ def compile(
     mtp: int = 1,
     logits_soft_cap_enabled: bool = False,
     func_name: str = None,
+    num_heads: int = 0,
+    num_kv_heads: int = 0
 ):
     return compile_template_op(
         src_template,
@@ -49,6 +51,8 @@ def compile(
         alibi_enabled=alibi_enabled,
         logits_soft_cap_enabled=logits_soft_cap_enabled,
         func_name=func_name,
+        num_heads=num_heads,
+        num_kv_heads=num_kv_heads
     )
 
 
@@ -134,6 +138,8 @@ def paged_attention_ragged(
         partition_size,
         mtp,
         bool(logits_soft_cap),
+        num_heads=num_heads,
+        num_kv_heads=num_kv_heads,
     )
 
     alibi_slopes_ptr = (
