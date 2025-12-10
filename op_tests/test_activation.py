@@ -20,6 +20,11 @@ def torch_silu_and_mul(input: torch.Tensor) -> torch.Tensor:
     out = F.silu(x) * y
     return out
 
+def torch_gelu_tanh_and_mul(input: torch.Tensor) -> torch.Tensor:
+    d = input.shape[-1] // 2
+    x, y = input.split([d, d], dim=-1)
+    out = F.gelu(x, approximate="tanh") * y
+    return out
 
 @benchmark()
 def test_scaled_silu_and_mul(m, n, dtype):
@@ -66,6 +71,48 @@ def test_silu_and_mul(m, n, dtype):
     ret["err"] = err
     return ret
 
+@benchmark()
+def test_gelu_tanh_and_mul(m, n, dtype):
+    ret = {}
+    input = torch.randn(m, n, dtype=dtype, device="cuda")
+    out = torch.empty((m, n // 2), dtype=dtype, device="cuda")
+    ref = torch_gelu_tanh_and_mul(input)
+    _, us_aiter = run_perftest(
+        aiter.gelu_tanh_and_mul,
+        out, input)
+    
+    # Check if the results are close
+    err = checkAllclose(ref, out)
+    ret["us"] = us_aiter
+    ret["TB/s"] = (input.nbytes + out.nbytes) / us_aiter / 1e6
+    ret["err"] = err
+    return ret
+
+from transformers.activations import ACT2FN
+def torch_gelu_ref(x: torch.Tensor) -> torch.Tensor:
+    out = ACT2FN["gelu_pytorch_tanh"](x)
+    return out
+
+def gelu_fast_vec_wrapper(input: torch.Tensor, m, n, dtype) -> torch.Tensor:
+    out = torch.empty((m, 1, n), dtype=dtype, device="cuda")
+    aiter.gelu_fast_vec(out, input)
+    return out
+
+@benchmark()
+def test_gelu_fast(m, n, dtype):
+    ret = {}
+    input = torch.randn(m, 1, n, dtype=dtype, device="cuda")
+    ref = torch_gelu_ref(input)
+    out, us_aiter = run_perftest(
+        gelu_fast_vec_wrapper,
+        input)
+
+    # Check if the results are close
+    err = checkAllclose(ref, out)
+    ret["us"] = us_aiter
+    ret["TB/s"] = (input.nbytes + out.nbytes) / us_aiter / 1e6
+    ret["err"] = err
+    return ret
 
 l_dtype = ["fp16", "bf16"]
 l_m = [1, 32, 64, 128, 256, 512, 1024, 4096, 8192, 163840]
@@ -128,7 +175,7 @@ df = []
 for dtype in l_dtype:
     for m in l_m:
         for n in l_n:
-            ret = test_silu_and_mul(m, n, dtype)
+            ret = test_gelu_fast(m, n, dtype)
             df.append(ret)
 df = pd.DataFrame(df)
-aiter.logger.info(f"silu_and_mul summary:\n{df}")
+aiter.logger.info(f"gelu_fast summary:\n{df}")

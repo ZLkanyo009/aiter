@@ -245,6 +245,33 @@ __global__ void activation_kernel(scalar_t* __restrict__ out,         // [..., d
     }
 }
 
+template <typename DTYPE_I, float (*ACT_FN)(const DTYPE_I&), int32_t VEC_SIZE_I>
+__global__ void activation_kernel_vec(DTYPE_I* __restrict__ out,
+                                             const DTYPE_I* __restrict__ input,
+                                             const int64_t numel) 
+{
+    using vec_i = ck_tile::vec_t<DTYPE_I, VEC_SIZE_I>;
+
+    for(int64_t idx = (blockIdx.x * blockDim.x + threadIdx.x) * VEC_SIZE_I;
+        idx < numel;
+        idx += gridDim.x * blockDim.x * VEC_SIZE_I)
+    {
+        // Vectorized load
+        vec_i x = *reinterpret_cast<const vec_i*>(&input[idx]);
+
+        DTYPE_I* x_ptr = reinterpret_cast<DTYPE_I*>(&x);
+
+        #pragma unroll
+        for(size_t j = 0; j < VEC_SIZE_I; j++)
+        {
+            x_ptr[j] = ck_tile::type_convert<DTYPE_I>(ACT_FN(x_ptr[j]));
+        }
+
+        // Vectorized store
+        *reinterpret_cast<vec_i*>(&out[idx]) = x;
+    }
+}
+
 } // namespace aiter
 
 // Launch element-wise activation kernel.
@@ -258,6 +285,32 @@ __global__ void activation_kernel(scalar_t* __restrict__ out,         // [..., d
     AITER_DISPATCH_FLOATING16_TYPES(input.scalar_type(), "activation_kernel", [&] {                \
         aiter::activation_kernel<scalar_t, KERNEL<scalar_t>>                                       \
             <<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(), d); \
+    });
+
+#define LAUNCH_ACTIVATION_KERNEL_VEC_SIMPLE(KERNEL)                                                \
+    int64_t numel      = input.numel();                                                            \
+    int vec_size       = nextPow2(numel / 64);                                                     \
+    vec_size           = vec_size > max_vec_size ? max_vec_size : vec_size;                        \
+    vec_size           = vec_size < 1 ? 1 : vec_size;                                              \
+    int64_t num_vecs   = (numel + vec_size - 1) / vec_size;                                        \
+    int num_wave       = nextPow2(num_vecs / 64);                                                  \
+    num_wave           = num_wave > max_wave_num ? max_wave_num : num_wave;                        \
+    num_wave           = num_wave < 1 ? 1 : num_wave;                                              \
+    int block_size     = num_wave * 64;                                                            \
+    int64_t num_blocks = (num_vecs + block_size - 1) / block_size;                                 \
+    num_blocks         = num_blocks > 2048 ? 2048 : num_blocks;                                    \
+    dim3 grid(num_blocks);                                                                         \
+    dim3 block(block_size);                                                                        \
+    const at::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(device_of(input));              \
+    const hipStream_t stream = at::hip::getCurrentHIPStream();                                     \
+    AITER_DISPATCH_FLOATING16_TYPES(input.scalar_type(), "activation_kernel_vec", [&] {     \
+        using input_dtype = typename t2ck<scalar_t>::type;                                         \
+        AITER_DISPATCH_CASE_VEC_SIZE(                                                              \
+            vec_size,                                                                              \
+            aiter::activation_kernel_vec<input_dtype, KERNEL<input_dtype>, VEC_SIZE>        \
+            <<<grid, block, 0, stream>>>(reinterpret_cast<input_dtype*>(out.data_ptr()),           \
+                                         reinterpret_cast<input_dtype*>(input.data_ptr()),         \
+                                         numel);)                                                  \
     });
 
 namespace aiter {
@@ -278,6 +331,15 @@ __device__ __forceinline__ T gelu_fast_kernel(const T& x)
     return ((T)0.5) * x * (((T)1.0) + t);
 }
 
+// Float-returning version for vectorized kernel
+template <typename T>
+__device__ __forceinline__ float gelu_fast_kernel_float(const T& x)
+{
+    const float f = ck_tile::type_convert<float>(x);
+    const float t = tanhf((f * 0.79788456f) * (1.0f + 0.044715f * f * f));
+    return 0.5f * f * (1.0f + t);
+}
+
 void gelu_new(torch::Tensor& out,   // [..., d]
               torch::Tensor& input) // [..., d]
 {
@@ -288,6 +350,12 @@ void gelu_fast(torch::Tensor& out,   // [..., d]
                torch::Tensor& input) // [..., d]
 {
     LAUNCH_ACTIVATION_KERNEL(aiter::gelu_fast_kernel);
+}
+
+void gelu_fast_vec(torch::Tensor& out,   // [..., d]
+                   torch::Tensor& input) // [..., d]
+{
+    LAUNCH_ACTIVATION_KERNEL_VEC(aiter::gelu_fast_kernel_float);
 }
 
 } // namespace aiter
