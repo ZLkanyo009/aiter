@@ -20,6 +20,7 @@ def torch_silu_and_mul(input: torch.Tensor) -> torch.Tensor:
     out = F.silu(x) * y
     return out
 
+
 @benchmark()
 def test_scaled_silu_and_mul(m, n, dtype):
     ret = {}
@@ -172,7 +173,7 @@ for dtype in l_dtype:
             ret = test_silu_and_mul(m, n, dtype)
             df.append(ret)
 df = pd.DataFrame(df)
-aiter.logger.info(f"silu_and_mul  summary:\n{df}")
+aiter.logger.info(f"silu_and_mul summary:\n{df}")
 
 df = []
 for dtype in l_dtype:
