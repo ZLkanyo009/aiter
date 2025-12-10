@@ -20,12 +20,6 @@ def torch_silu_and_mul(input: torch.Tensor) -> torch.Tensor:
     out = F.silu(x) * y
     return out
 
-def torch_gelu_tanh_and_mul(input: torch.Tensor) -> torch.Tensor:
-    d = input.shape[-1] // 2
-    x, y = input.split([d, d], dim=-1)
-    out = F.gelu(x, approximate="tanh") * y
-    return out
-
 @benchmark()
 def test_scaled_silu_and_mul(m, n, dtype):
     ret = {}
@@ -175,7 +169,17 @@ df = []
 for dtype in l_dtype:
     for m in l_m:
         for n in l_n:
+            ret = test_silu_and_mul(m, n, dtype)
+            df.append(ret)
+df = pd.DataFrame(df)
+aiter.logger.info(f"silu_and_mul  summary:\n{df}")
+
+df = []
+for dtype in l_dtype:
+    for m in l_m:
+        for n in l_n:
             ret = test_gelu_fast(m, n, dtype)
             df.append(ret)
 df = pd.DataFrame(df)
 aiter.logger.info(f"gelu_fast summary:\n{df}")
+
