@@ -259,7 +259,7 @@ __global__ void fused_mrope_rms_noneox_kernel(
 
 template <typename T>
 void fused_rope_rms(
-    T *qkv, const T *q_w, const T *k_w, const T *cos_sin, const int64_t *positions,
+    T *qkv, const T *q_w, const T *k_w, const T *cos_sin, const int64_t *positions, int64_t ps0, int64_t ps1,
     int64_t num_tokens, int64_t num_heads_q, int64_t num_heads_k, int64_t num_heads_v, int64_t head_size,
     bool is_neox_style, double eps, hipStream_t stream) {
     TORCH_CHECK(head_size == 64 || head_size == 128 || head_size == 256);
@@ -270,13 +270,13 @@ void fused_rope_rms(
     dim3 numBlocks((total_warps + num_warps_per_block - 1) / num_warps_per_block);
     std::array<int64_t, 1> mrope_section = {0};
 
-#define DISPATCH_NEOX(HEAD_SIZE)                                                                                                    \
-    if (is_neox_style) {                                                                                                            \
-        fused_mrope_rms_neox_kernel<T, HEAD_SIZE, false, false, 1><<<numBlocks, threadsPerBlock, 0, stream>>>(                      \
-            qkv, q_w, k_w, cos_sin, positions, num_heads_q, num_heads_k, num_heads_v, eps, mrope_section, num_tokens, total_warps); \
-    } else {                                                                                                                        \
-        fused_mrope_rms_noneox_kernel<T, HEAD_SIZE, false, false, 1><<<numBlocks, threadsPerBlock, 0, stream>>>(                    \
-            qkv, q_w, k_w, cos_sin, positions, num_heads_q, num_heads_k, num_heads_v, eps, mrope_section, num_tokens, total_warps); \
+#define DISPATCH_NEOX(HEAD_SIZE)                                                                                                              \
+    if (is_neox_style) {                                                                                                                      \
+        fused_mrope_rms_neox_kernel<T, HEAD_SIZE, false, false, 1><<<numBlocks, threadsPerBlock, 0, stream>>>(                                \
+            qkv, q_w, k_w, cos_sin, positions, ps0, ps1, num_heads_q, num_heads_k, num_heads_v, eps, mrope_section, num_tokens, total_warps); \
+    } else {                                                                                                                                  \
+        fused_mrope_rms_noneox_kernel<T, HEAD_SIZE, false, false, 1><<<numBlocks, threadsPerBlock, 0, stream>>>(                              \
+            qkv, q_w, k_w, cos_sin, positions, ps0, ps1, num_heads_q, num_heads_k, num_heads_v, eps, mrope_section, num_tokens, total_warps); \
     }
 
     switch (head_size) {
@@ -722,5 +722,39 @@ void fused_mrope_3d_rms_set_kv(Tensor &qkv, Tensor &qw, Tensor &kw, Tensor &cos_
                     (float)v_scale,
                     stream);
             }
+        }
+    );
+}
+
+void fused_rope_rms(Tensor &qkv, Tensor &qw, Tensor &kw, Tensor &cos_sin, Tensor &positions,
+                    int64_t num_tokens, int64_t num_heads_q, int64_t num_heads_k, int64_t num_heads_v, int64_t head_size,
+                    bool is_neox_style, double eps) {
+    TORCH_CHECK(qkv.is_contiguous() && qw.is_contiguous() && kw.is_contiguous() && cos_sin.is_contiguous());
+    const at::hip::OptionalHIPGuardMasqueradingAsCUDA device_guard(device_of(qkv));
+    auto stream = c10::hip::getCurrentHIPStreamMasqueradingAsCUDA().stream();
+    auto pos_strides = positions.strides();
+    TORCH_CHECK(pos_strides.size() == 1);
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+        kBFloat16,
+        kHalf,
+        qkv.scalar_type(),
+        "fused_rope_rms", [&] {
+            using T = KernelElementType<scalar_t>::type;
+            rope_rms::fused_rope_rms<T>(
+                (T*)qkv.data_ptr<scalar_t>(),
+                (T*)qw.data_ptr<scalar_t>(),
+                (T*)kw.data_ptr<scalar_t>(),
+                (T*)cos_sin.data_ptr<scalar_t>(),
+                positions.data_ptr<int64_t>(),
+                0,
+                pos_strides[0],
+                num_tokens,
+                num_heads_q,
+                num_heads_k,
+                num_heads_v,
+                head_size,
+                is_neox_style,
+                eps,
+                stream);
         });
 }
