@@ -306,10 +306,10 @@ struct SyncComm {
             while (details::ld_flag<RELAXED>(current_flag) < flag) {
             }
         }
-        __syncthreads();
         if (threadIdx.x == 0) {
             *flag_ptr = flag;
         }
+        __syncthreads();
     }
 
     int *flag_ptr;
