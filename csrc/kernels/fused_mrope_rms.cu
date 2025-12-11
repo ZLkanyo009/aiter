@@ -723,6 +723,7 @@ void fused_mrope_3d_rms_set_kv(Tensor &qkv, Tensor &qw, Tensor &kw, Tensor &cos_
                     stream);
             }
         }
+    );
 }
 
 void fused_rope_rms(Tensor &qkv, Tensor &qw, Tensor &kw, Tensor &cos_sin, Tensor &positions,

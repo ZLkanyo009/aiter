@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 from dataclasses import dataclass
-from aiter import dtypes, fused_mrope_3d_rms, fused_mrope_3d_rms_set_kv
+from aiter import dtypes, fused_mrope_3d_rms, fused_mrope_3d_rms_set_kv, fused_rope_rms
 
 # from custom_op import CustomOp
 
@@ -36,6 +36,7 @@ import os
 
 AITER_ROPE_TRITON_BACKEND = int(os.environ.get("AITER_ROPE_TRITON_BACKEND", 0)) == 1
 AITER_ROPE_NATIVE_BACKEND = int(os.environ.get("AITER_ROPE_NATIVE_BACKEND", 0)) == 1
+AITER_ROPE_FUSED_QKNORM = int(os.environ.get("AITER_ROPE_FUSED_QKNORM", 0)) == 1
 
 
 def _rotate_neox(x: torch.Tensor) -> torch.Tensor:
@@ -1150,8 +1151,8 @@ class AiterFusedSetKVBufferArg:
     k_scale: float
     v_scale: float
 
-class MRotaryEmbeddingQKNormFused(nn.Module):
-    """Rotary Embedding with Multimodal Sections fused with QKNorm"""
+class RotaryEmbeddingFusedQKNorm(nn.Module):
+    """Rotary Embedding with QKNorm fused"""
 
     def _compute_inv_freq(self, base: Union[int, float]) -> torch.Tensor:
         """Compute the inverse frequency."""
@@ -1177,6 +1178,72 @@ class MRotaryEmbeddingQKNormFused(nn.Module):
         sin = freqs.sin()
         return cos, sin
 
+    def __init__(self,
+        head_size: int,
+        rotary_dim: int,
+        max_position_embeddings: int,
+        base: int,
+        is_neox_style: bool,
+        dtype: torch.dtype,
+    ) -> None:
+        super().__init__()
+        self.head_size = head_size
+        self.rotary_dim = rotary_dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        self.is_neox_style = is_neox_style
+        self.dtype = dtype
+
+        cos, sin = self._compute_cos_sin_cache()
+        cos = cos.to(dtype)
+        sin = sin.to(dtype)
+        cache = torch.cat((cos, sin), dim=-1)
+        self.cos_sin_cache: torch.Tensor
+        self.register_buffer("cos_sin_cache", cache, persistent=False)
+
+    def forward(
+        self,
+        qkv: torch.Tensor,
+        q_weight: torch.Tensor,
+        k_weight: torch.Tensor,
+        positions: torch.Tensor,
+        num_heads: int,
+        num_kv_heads: int,
+        eps: float,
+        fused_set_kv_buffer_arg: Optional[AiterFusedSetKVBufferArg] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        assert positions.ndim == 1 or positions.ndim == 2
+        num_tokens = positions.shape[-1]
+        num_heads_q = num_heads
+        num_heads_k = num_kv_heads
+        num_heads_v = num_kv_heads
+        assert fused_set_kv_buffer_arg is None, "fused_set_kv_buffer_arg is not supported for RotaryEmbeddingFusedQKNorm"
+        fused_rope_rms(
+            qkv,
+            q_weight,
+            k_weight,
+            self.cos_sin_cache,
+            positions,
+            num_tokens,
+            num_heads_q,
+            num_heads_k,
+            num_heads_v,
+            self.head_size,
+            self.is_neox_style,
+            eps,
+        )
+        q_size = num_heads_q * self.head_size
+        k_size = num_heads_k * self.head_size
+        v_size = num_heads_v * self.head_size
+
+        qkv = qkv.view(num_tokens, q_size + k_size + v_size)
+        q, k, v = qkv.split([q_size, k_size, v_size], dim=-1)
+
+        return q, k, v 
+
+class MRotaryEmbeddingQKNormFused(RotaryEmbeddingFusedQKNorm):
+    """Rotary Embedding with Multimodal Sections fused with QKNorm"""
+
     def __init__(
         self,
         head_size: int,
@@ -1188,22 +1255,8 @@ class MRotaryEmbeddingQKNormFused(nn.Module):
         mrope_section: Optional[List[int]] = None,
         mrope_interleaved: bool = False,
     ) -> None:
-        super().__init__()
-        self.head_size = head_size
-        self.rotary_dim = rotary_dim
-        assert self.head_size == self.rotary_dim
-        self.max_position_embeddings = max_position_embeddings
-        self.base = base
-        self.is_neox_style = is_neox_style
-        self.dtype = dtype
+        super().__init__(head_size, rotary_dim, max_position_embeddings, base, is_neox_style, dtype)
         self.mrope_interleaved = mrope_interleaved
-
-        cos, sin = self._compute_cos_sin_cache()
-        cos = cos.to(dtype)
-        sin = sin.to(dtype)
-        cache = torch.cat((cos, sin), dim=-1)
-        self.cos_sin_cache: torch.Tensor
-        self.register_buffer("cos_sin_cache", cache, persistent=False)
         self.mrope_section = mrope_section
         if self.mrope_section:
             expected_sum = rotary_dim // 2
@@ -1572,9 +1625,14 @@ def get_rope(
             **extra_kwargs,
         )
     elif rope_scaling is None:
-        rotary_emb = RotaryEmbedding(
-            head_size, rotary_dim, max_position, base, is_neox_style, dtype
-        )
+        if AITER_ROPE_FUSED_QKNORM:
+            rotary_emb = RotaryEmbeddingFusedQKNorm(
+                head_size, rotary_dim, max_position, base, is_neox_style, dtype
+            )
+        else:
+            rotary_emb = RotaryEmbedding(
+                head_size, rotary_dim, max_position, base, is_neox_style, dtype
+            )
     else:
         scaling_type = (
             rope_scaling["rope_type"]
