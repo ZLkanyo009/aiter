@@ -245,10 +245,31 @@ __global__ void activation_kernel(scalar_t* __restrict__ out,         // [..., d
     }
 }
 
+__device__ __forceinline__ float aiter_tanh_fast(float x)
+{
+    // return tanhf(x);
+    // Target: max abs error <= 1e-3 by saturating for |x|>=3.8
+    const float ax = fabsf(x);
+    if(ax >= 3.8f) return copysignf(1.0f, x);
+
+    // Padé / rational approximation:
+    // tanh(x) ~= x * (135135 + 17325*x^2 + 378*x^4 + x^6) / (135135 + 62370*x^2 + 3150*x^4 + 28*x^6)
+    const float x2 = x * x;
+
+    // P(x2) = ((x2 + 378)*x2 + 17325)*x2 + 135135
+    const float p = fmaf(x2, fmaf(x2, fmaf(x2, 1.0f, 378.0f), 17325.0f), 135135.0f);
+    // Q(x2) = ((28*x2 + 3150)*x2 + 62370)*x2 + 135135
+    const float q = fmaf(x2, fmaf(x2, fmaf(x2, 28.0f, 3150.0f), 62370.0f), 135135.0f);
+
+    const float y = (x * p) / q;
+    // safety clamp
+    return fminf(1.0f, fmaxf(-1.0f, y));
+}
+
 template <typename DTYPE_I, float (*ACT_FN)(const DTYPE_I&), int32_t VEC_SIZE_I>
 __global__ void activation_kernel_vec(DTYPE_I* __restrict__ out,
                                              const DTYPE_I* __restrict__ input,
-                                             const int64_t numel) 
+                                             const int64_t numel)
 {
     using vec_i = ck_tile::vec_t<DTYPE_I, VEC_SIZE_I>;
     const int64_t stride = gridDim.x * blockDim.x * VEC_SIZE_I * 2;
@@ -275,7 +296,7 @@ __global__ void activation_kernel_vec(DTYPE_I* __restrict__ out,
             float f0 = ck_tile::type_convert<float>(x0_ptr[j]);
             float f0_sq = f0 * f0;
             float inner0 = fmaf(0.035677408f, f0_sq * f0, 0.79788456f * f0);
-            float t0 = tanhf(inner0);
+            float t0 = aiter_tanh_fast(inner0);
             x0_ptr[j] = ck_tile::type_convert<DTYPE_I>(0.5f * fmaf(f0, t0, f0));
 
             // Inline GELU for x1 (if exists)
@@ -283,7 +304,7 @@ __global__ void activation_kernel_vec(DTYPE_I* __restrict__ out,
                 float f1 = ck_tile::type_convert<float>(x1_ptr[j]);
                 float f1_sq = f1 * f1;
                 float inner1 = fmaf(0.035677408f, f1_sq * f1, 0.79788456f * f1);
-                float t1 = tanhf(inner1);
+                float t1 = aiter_tanh_fast(inner1);
                 x1_ptr[j] = ck_tile::type_convert<DTYPE_I>(0.5f * fmaf(f1, t1, f1));
             }
         }
