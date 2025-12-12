@@ -539,6 +539,5 @@ if __name__ == "__main__":
                             ms,
                             is_interleaved,
                             eps=1e-6,
-                            is_mrope=True,
                         )
     print("done")
