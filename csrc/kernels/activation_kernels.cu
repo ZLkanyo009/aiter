@@ -251,24 +251,48 @@ __global__ void activation_kernel_vec(DTYPE_I* __restrict__ out,
                                              const int64_t numel) 
 {
     using vec_i = ck_tile::vec_t<DTYPE_I, VEC_SIZE_I>;
+    const int64_t stride = gridDim.x * blockDim.x * VEC_SIZE_I * 2;
 
-    for(int64_t idx = (blockIdx.x * blockDim.x + threadIdx.x) * VEC_SIZE_I;
+    for(int64_t idx = (blockIdx.x * blockDim.x + threadIdx.x) * VEC_SIZE_I * 2;
         idx < numel;
-        idx += gridDim.x * blockDim.x * VEC_SIZE_I)
+        idx += stride)
     {
-        // Vectorized load
-        vec_i x = *reinterpret_cast<const vec_i*>(&input[idx]);
-
-        DTYPE_I* x_ptr = reinterpret_cast<DTYPE_I*>(&x);
-
-        #pragma unroll
-        for(size_t j = 0; j < VEC_SIZE_I; j++)
-        {
-            x_ptr[j] = ck_tile::type_convert<DTYPE_I>(ACT_FN(x_ptr[j]));
+        // Load two vectors
+        vec_i x0 = *reinterpret_cast<const vec_i*>(&input[idx]);
+        vec_i x1;
+        bool has_second = (idx + VEC_SIZE_I < numel);
+        if (has_second) {
+            x1 = *reinterpret_cast<const vec_i*>(&input[idx + VEC_SIZE_I]);
         }
 
-        // Vectorized store
-        *reinterpret_cast<vec_i*>(&out[idx]) = x;
+        DTYPE_I* x0_ptr = reinterpret_cast<DTYPE_I*>(&x0);
+        DTYPE_I* x1_ptr = reinterpret_cast<DTYPE_I*>(&x1);
+
+        // Process both vectors with inline GELU (compiler can interleave instructions)
+        #pragma unroll
+        for(size_t j = 0; j < VEC_SIZE_I; j++) {
+            // Inline GELU for x0
+            float f0 = ck_tile::type_convert<float>(x0_ptr[j]);
+            float f0_sq = f0 * f0;
+            float inner0 = fmaf(0.035677408f, f0_sq * f0, 0.79788456f * f0);
+            float t0 = tanhf(inner0);
+            x0_ptr[j] = ck_tile::type_convert<DTYPE_I>(0.5f * fmaf(f0, t0, f0));
+
+            // Inline GELU for x1 (if exists)
+            if (has_second) {
+                float f1 = ck_tile::type_convert<float>(x1_ptr[j]);
+                float f1_sq = f1 * f1;
+                float inner1 = fmaf(0.035677408f, f1_sq * f1, 0.79788456f * f1);
+                float t1 = tanhf(inner1);
+                x1_ptr[j] = ck_tile::type_convert<DTYPE_I>(0.5f * fmaf(f1, t1, f1));
+            }
+        }
+
+        // Store both vectors
+        *reinterpret_cast<vec_i*>(&out[idx]) = x0;
+        if (has_second) {
+            *reinterpret_cast<vec_i*>(&out[idx + VEC_SIZE_I]) = x1;
+        }
     }
 }
 
@@ -287,7 +311,7 @@ __global__ void activation_kernel_vec(DTYPE_I* __restrict__ out,
             <<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(), d); \
     });
 
-#define LAUNCH_ACTIVATION_KERNEL_VEC_SIMPLE(KERNEL)                                                \
+#define LAUNCH_ACTIVATION_KERNEL_VEC(KERNEL)                                                \
     int64_t numel      = input.numel();                                                            \
     int vec_size       = nextPow2(numel / 64);                                                     \
     vec_size           = vec_size > max_vec_size ? max_vec_size : vec_size;                        \

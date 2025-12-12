@@ -88,8 +88,8 @@ def torch_gelu_ref(x: torch.Tensor) -> torch.Tensor:
     out = ACT2FN["gelu_pytorch_tanh"](x)
     return out
 
-def gelu_fast_vec_wrapper(input: torch.Tensor, m, n, dtype) -> torch.Tensor:
-    out = torch.empty((m, 1, n), dtype=dtype, device="cuda")
+def gelu_fast_vec_wrapper(input: torch.Tensor) -> torch.Tensor:
+    out = torch.randn_like(input)
     aiter.gelu_fast_vec(out, input)
     return out
 
