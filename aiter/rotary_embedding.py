@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 from dataclasses import dataclass
-from aiter import dtypes, fused_mrope_3d_rms, fused_mrope_3d_rms_set_kv, fused_rope_rms
+from aiter import dtypes, fused_mrope_3d_rms, fused_mrope_3d_rms_set_kv, fused_rope_rms, fused_rope_rms_set_kv
 
 # from custom_op import CustomOp
 
@@ -1217,29 +1217,52 @@ class RotaryEmbeddingFusedQKNorm(nn.Module):
         num_heads_q = num_heads
         num_heads_k = num_kv_heads
         num_heads_v = num_kv_heads
-        assert fused_set_kv_buffer_arg is None, "fused_set_kv_buffer_arg is not supported for RotaryEmbeddingFusedQKNorm"
-        fused_rope_rms(
-            qkv,
-            q_weight,
-            k_weight,
-            self.cos_sin_cache,
-            positions,
-            num_tokens,
-            num_heads_q,
-            num_heads_k,
-            num_heads_v,
-            self.head_size,
-            self.is_neox_style,
-            eps,
-        )
-        q_size = num_heads_q * self.head_size
-        k_size = num_heads_k * self.head_size
-        v_size = num_heads_v * self.head_size
+        if fused_set_kv_buffer_arg is not None:
+            q_out = torch.empty(num_tokens, num_heads_q, self.head_size, dtype=qkv.dtype, device=qkv.device)
+            fused_rope_rms_set_kv(
+                qkv,
+                q_weight,
+                k_weight,
+                self.cos_sin_cache,
+                positions,
+                num_tokens,
+                num_heads_q,
+                num_heads_k,
+                num_heads_v,
+                self.head_size,
+                self.is_neox_style,
+                eps,
+                q_out,
+                fused_set_kv_buffer_arg.kv_cache[0],
+                fused_set_kv_buffer_arg.kv_cache[1],
+                fused_set_kv_buffer_arg.cache_loc,
+                fused_set_kv_buffer_arg.k_scale,
+                fused_set_kv_buffer_arg.v_scale,
+            )
+            return q_out, None, None
+        else:
+            fused_rope_rms(
+                qkv,
+                q_weight,
+                k_weight,
+                self.cos_sin_cache,
+                positions,
+                num_tokens,
+                num_heads_q,
+                num_heads_k,
+                num_heads_v,
+                self.head_size,
+                self.is_neox_style,
+                eps,
+            )
+            q_size = num_heads_q * self.head_size
+            k_size = num_heads_k * self.head_size
+            v_size = num_heads_v * self.head_size
 
-        qkv = qkv.view(num_tokens, q_size + k_size + v_size)
-        q, k, v = qkv.split([q_size, k_size, v_size], dim=-1)
+            qkv = qkv.view(num_tokens, q_size + k_size + v_size)
+            q, k, v = qkv.split([q_size, k_size, v_size], dim=-1)
 
-        return q, k, v 
+            return q, k, v 
 
 class MRotaryEmbeddingQKNormFused(RotaryEmbeddingFusedQKNorm):
     """Rotary Embedding with Multimodal Sections fused with QKNorm"""
