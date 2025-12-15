@@ -427,7 +427,10 @@ a8w8_gemm2_kernels_list= {
      30: kernelInstanceGEMM2(       64,        16,         16,      128,     1,       1,        1,),
      31: kernelInstanceGEMM2(       64,       128,         64,      128,     1,       1,        1,),
      # inter_dim=192 default instances with KPerBlock=64
-     34: kernelInstanceGEMM2(       64,        32,         64,       64,     1,       1,        1,),
+     32: kernelInstanceGEMM2(       64,        16,         64,       64,     1,       1,        1,),
+     33: kernelInstanceGEMM2(       64,        32,         64,       64,     1,       1,        1,),
+     34: kernelInstanceGEMM2(       64,        64,         64,       64,     1,       1,        1,),
+     35: kernelInstanceGEMM2(       64,       128,         64,       64,     1,       1,        1,),
 }
 
 # gemm2 MXDLPerWave out:bf16/fp16 AB:fp8/i8
