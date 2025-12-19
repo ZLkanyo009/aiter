@@ -1220,6 +1220,11 @@ class RotaryEmbeddingFusedQKNorm(nn.Module):
         num_heads_v = num_kv_heads
         if fused_set_kv_buffer_arg is not None:
             q_out = torch.empty(num_tokens, num_heads_q, self.head_size, dtype=qkv.dtype, device=qkv.device)
+            # Create k_out and v_out buffers for varlen format output
+            return_kv = fused_set_kv_buffer_arg.return_kv
+            kv_cache_dtype = fused_set_kv_buffer_arg.kv_cache[0].dtype
+            k_out = torch.empty(num_tokens, num_heads_k, self.head_size, dtype=kv_cache_dtype, device=qkv.device) if return_kv else None
+            v_out = torch.empty(num_tokens, num_heads_v, self.head_size, dtype=kv_cache_dtype, device=qkv.device) if return_kv else None
             fused_rope_rms_set_kv(
                 qkv,
                 q_weight,
@@ -1239,8 +1244,14 @@ class RotaryEmbeddingFusedQKNorm(nn.Module):
                 fused_set_kv_buffer_arg.cache_loc,
                 fused_set_kv_buffer_arg.k_scale,
                 fused_set_kv_buffer_arg.v_scale,
+                k_out,
+                v_out,
+                return_kv,
             )
-            return q_out, None, None
+            if return_kv:
+                return q_out, k_out, v_out
+            else:
+                return q_out, None, None
         else:
             fused_rope_rms(
                 qkv,

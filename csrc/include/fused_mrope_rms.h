@@ -77,4 +77,7 @@ void fused_rope_rms_set_kv(Tensor& qkv,
                            Tensor& v_cache,
                            Tensor& kv_loc,
                            double k_scale,
-                           double v_scale);
+                           double v_scale,
+                           std::optional<Tensor> k_out,
+                           std::optional<Tensor> v_out,
+                           bool return_kv);
