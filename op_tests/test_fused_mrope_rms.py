@@ -426,7 +426,7 @@ def run_fused_mrope_3d_rms_set_kv(
             return_kv,
         )
     else:
-        # For non-mrope case, use fused_rope_rms_set_kv (which doesn't have k_out/v_out yet)
+        # For non-mrope case, use fused_rope_rms_set_kv (now supports k_out/v_out)
         aiter.fused_rope_rms_set_kv(
             qkv,
             qw,
@@ -446,11 +446,10 @@ def run_fused_mrope_3d_rms_set_kv(
             kv_loc,
             k_scale,
             v_scale,
+            k_out,
+            v_out,
+            return_kv,
         )
-        # For non-mrope, manually set k_out and v_out if requested
-        if return_kv and k_out is not None and v_out is not None:
-            k_out.copy_(k_cache[kv_loc])
-            v_out.copy_(v_cache[kv_loc])
     return None
 
 
@@ -617,6 +616,7 @@ def test_mrope_3d_rms_set_kv(
 
 
 if __name__ == "__main__":
+
     print("\n\n================== test_rope_rms ==================\n\n")
     is_neox_styles = [True, False]
     num_tokens = [513, 1257, 127, 778, 10024, 3]
@@ -670,7 +670,6 @@ if __name__ == "__main__":
                             eps=1e-6,
                             is_mrope=True,
                         )
-
     print("\n\n================== test_rope_rms_set_kv ==================\n\n")
     is_neox_styles = [True, False]
     num_tokens = [513, 1257, 127, 778, 10024, 3]
@@ -678,23 +677,30 @@ if __name__ == "__main__":
     head_sizes = [64, 128, 256]
     max_positions = 10000
     dtype = torch.bfloat16
-    for is_neox_style in is_neox_styles:
-        for num_token in num_tokens:
-            for num_head in num_heads:
-                for i, head_size in enumerate(head_sizes):
-                    test_mrope_3d_rms_set_kv(
-                        dtype,
-                        num_token,
-                        num_head,
-                        num_head,
-                        num_head,
-                        head_size,
-                        is_neox_style,
-                        None,
-                        None,
-                        eps=1e-6,
-                        is_mrope=False,
-                    )
+    kv_cache_dtypes = [torch.bfloat16, torch.float8_e4m3fn, torch.float8_e4m3fnuz]
+    test_return_kv_flags = [True, False]
+    
+    for kv_cache_dtype in kv_cache_dtypes:
+        for test_return_kv in test_return_kv_flags:
+            for is_neox_style in is_neox_styles:
+                for num_token in num_tokens:
+                    for num_head in num_heads:
+                        for i, head_size in enumerate(head_sizes):
+                            test_mrope_3d_rms_set_kv(
+                                dtype,
+                                num_token,
+                                num_head,
+                                num_head,
+                                num_head,
+                                head_size,
+                                is_neox_style,
+                                None,
+                                None,
+                                eps=1e-6,
+                                is_mrope=False,
+                                kv_cache_dtype=kv_cache_dtype,
+                                test_return_kv=test_return_kv,
+                            )
 
     print("\n\n================== test_mrope_3d_rms_set_kv ==================\n\n")
     is_neox_styles = [True, False]
